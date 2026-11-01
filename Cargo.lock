@@ -285,7 +285,7 @@ dependencies = [
  "bitflags 2.13.1",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2872,8 +2872,8 @@ dependencies = [
 [[package]]
 name = "rustls-webpki"
 version = "0.103.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+source = "sparse+https://crates.17166969.xyz/current/registry/"
+checksum = "0ff5b9cf113b384e57256a1dd5c7fbec4a5970100cb5bf9c8f9e0504aec2b0bb"
 dependencies = [
  "aws-lc-rs",
  "ring",

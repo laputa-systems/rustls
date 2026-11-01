@@ -1,3 +1,6 @@
 [alias]
 
 fmt-unstable = ["fmt", "--all", "--", "--config-path", ".rustfmt.unstable.toml"]
+
+[registries.mycrates]
+index = "sparse+https://crates.17166969.xyz/current/registry/"
