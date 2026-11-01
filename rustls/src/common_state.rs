@@ -5,7 +5,7 @@ use pki_types::CertificateDer;
 
 use crate::conn::kernel::KernelState;
 use crate::crypto::SupportedKxGroup;
-use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
+use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion, SignatureScheme};
 use crate::error::{Error, InvalidMessage, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
 use crate::log::{debug, error, warn};
@@ -48,6 +48,8 @@ pub struct CommonState {
     #[cfg(feature = "std")]
     pub(crate) has_seen_eof: bool,
     pub(crate) peer_certificates: Option<CertificateChain<'static>>,
+    pub(crate) local_signature_scheme: Option<SignatureScheme>,
+    pub(crate) peer_signature_scheme: Option<SignatureScheme>,
     message_fragmenter: MessageFragmenter,
     pub(crate) received_plaintext: ChunkVecBuffer,
     pub(crate) sendable_tls: ChunkVecBuffer,
@@ -61,6 +63,67 @@ pub struct CommonState {
     pub(crate) refresh_traffic_keys_pending: bool,
     pub(crate) fips: bool,
     pub(crate) tls13_tickets_received: u32,
+    tls_unique: Option<Vec<u8>>,
+    message_callback_version: Option<ProtocolVersion>,
+    message_callback_events: Option<MessageCallbackEvents>,
+}
+
+const MESSAGE_CALLBACK_MAX_EVENTS: usize = 4096;
+const MESSAGE_CALLBACK_MAX_BYTES: usize = 1_048_576;
+
+pub(crate) type MessageCallbackEvent = (bool, u16, u16, i32, Vec<u8>);
+
+struct MessageCallbackEvents {
+    events: Vec<MessageCallbackEvent>,
+    bytes: usize,
+    overflowed: bool,
+}
+
+impl MessageCallbackEvents {
+    fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            bytes: 0,
+            overflowed: false,
+        }
+    }
+
+    fn push(
+        &mut self,
+        write: bool,
+        version: u16,
+        content_type: u16,
+        message_type: i32,
+        data: &[u8],
+    ) {
+        if self.overflowed {
+            return;
+        }
+        if self.events.len() == MESSAGE_CALLBACK_MAX_EVENTS
+            || self.bytes.saturating_add(data.len()) > MESSAGE_CALLBACK_MAX_BYTES
+        {
+            self.overflowed = true;
+            return;
+        }
+        self.bytes += data.len();
+        self.events.push((
+            write,
+            version,
+            content_type,
+            message_type,
+            data.to_vec(),
+        ));
+    }
+
+    fn take(&mut self) -> Option<Vec<MessageCallbackEvent>> {
+        if self.overflowed {
+            self.events.clear();
+            self.bytes = 0;
+            return None;
+        }
+        self.bytes = 0;
+        Some(core::mem::take(&mut self.events))
+    }
 }
 
 impl CommonState {
@@ -83,6 +146,8 @@ impl CommonState {
             #[cfg(feature = "std")]
             has_seen_eof: false,
             peer_certificates: None,
+            local_signature_scheme: None,
+            peer_signature_scheme: None,
             message_fragmenter: MessageFragmenter::default(),
             received_plaintext: ChunkVecBuffer::new(Some(DEFAULT_RECEIVED_PLAINTEXT_LIMIT)),
             sendable_tls: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
@@ -94,7 +159,149 @@ impl CommonState {
             refresh_traffic_keys_pending: false,
             fips: false,
             tls13_tickets_received: 0,
+            tls_unique: None,
+            message_callback_version: None,
+            message_callback_events: None,
         }
+    }
+
+    pub(crate) fn set_message_callback_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.message_callback_events
+                .get_or_insert_with(MessageCallbackEvents::new);
+        } else {
+            self.message_callback_events = None;
+        }
+    }
+
+    pub(crate) fn set_message_callback_version(&mut self, version: ProtocolVersion) {
+        self.message_callback_version = Some(version);
+    }
+
+    pub(crate) fn take_message_callback_events(
+        &mut self,
+    ) -> Option<Vec<MessageCallbackEvent>> {
+        self.message_callback_events
+            .as_mut()
+            .map(MessageCallbackEvents::take)
+            .unwrap_or_else(|| Some(Vec::new()))
+    }
+
+    fn capture_message_callback_event(
+        &mut self,
+        write: bool,
+        version: ProtocolVersion,
+        content_type: u16,
+        message_type: i32,
+        data: &[u8],
+    ) {
+        let Some(events) = self.message_callback_events.as_mut() else {
+            return;
+        };
+        let version = self
+            .negotiated_version
+            .or(self.message_callback_version)
+            .unwrap_or(version);
+        events.push(
+            write,
+            u16::from(version),
+            content_type,
+            message_type,
+            data,
+        );
+    }
+
+    pub(crate) fn capture_message_callback_header(&mut self, write: bool, header: &[u8; 5]) {
+        let version = u16::from_be_bytes([header[1], header[2]]);
+        let message_type = i32::from(header[0]);
+        let Some(events) = self.message_callback_events.as_mut() else {
+            return;
+        };
+        events.push(write, version, 0x100, message_type, header);
+    }
+
+    pub(crate) fn capture_message_callback_message(
+        &mut self,
+        write: bool,
+        version: ProtocolVersion,
+        content_type: ContentType,
+        data: &[u8],
+    ) {
+        let content_type = u16::from(u8::from(content_type));
+        let message_type = match content_type {
+            0x14 => 0x101,
+            0x15 if data.len() >= 2 => i32::from(data[1]),
+            0x16 if !data.is_empty() => i32::from(data[0]),
+            _ => -1,
+        };
+        self.capture_message_callback_event(
+            write,
+            version,
+            content_type,
+            message_type,
+            data,
+        );
+    }
+
+    pub(crate) fn capture_message_callback_payload(
+        &mut self,
+        write: bool,
+        version: ProtocolVersion,
+        content_type: ContentType,
+        data: &[u8],
+    ) {
+        if content_type != ContentType::Handshake {
+            self.capture_message_callback_message(write, version, content_type, data);
+            return;
+        }
+        let mut offset = 0;
+        while data.len().saturating_sub(offset) >= 4 {
+            let length = usize::from(u16::from_be_bytes([
+                data[offset + 2],
+                data[offset + 3],
+            ]))
+                | (usize::from(data[offset + 1]) << 16);
+            let end = offset + 4 + length;
+            if end > data.len() {
+                break;
+            }
+            self.capture_message_callback_message(
+                write,
+                version,
+                content_type,
+                &data[offset..end],
+            );
+            offset = end;
+        }
+        if offset < data.len() {
+            self.capture_message_callback_message(
+                write,
+                version,
+                content_type,
+                &data[offset..],
+            );
+        }
+    }
+
+    pub(crate) fn capture_message_callback_inner_type(
+        &mut self,
+        write: bool,
+        content_type: ContentType,
+        data: &[u8],
+    ) {
+        let content_type_byte = u8::from(content_type);
+        let data = if data.is_empty() {
+            &[content_type_byte][..]
+        } else {
+            data
+        };
+        self.capture_message_callback_event(
+            write,
+            ProtocolVersion::TLSv1_3,
+            0x101,
+            i32::from(content_type_byte),
+            data,
+        );
     }
 
     /// Returns true if the caller should call [`Connection::write_tls`] as soon as possible.
@@ -113,6 +320,17 @@ impl CommonState {
     /// [`Connection::process_new_packets()`]: crate::Connection::process_new_packets
     pub fn is_handshaking(&self) -> bool {
         !(self.may_send_application_data && self.may_receive_application_data)
+    }
+
+    /// Returns the captured tls-unique channel binding data, if available.
+    pub fn tls_unique(&self) -> Option<&[u8]> {
+        self.tls_unique.as_deref()
+    }
+
+    pub(crate) fn set_tls_unique_if_none(&mut self, finished: &[u8]) {
+        if self.tls_unique.is_none() {
+            self.tls_unique = Some(finished.to_vec());
+        }
     }
 
     /// Retrieves the certificate chain or the raw public key used by the peer to authenticate.
@@ -138,6 +356,24 @@ impl CommonState {
     /// This choice simplifies the API and ensures backwards compatibility.
     pub fn peer_certificates(&self) -> Option<&[CertificateDer<'static>]> {
         self.peer_certificates.as_deref()
+    }
+
+    /// Returns the signature scheme used by this endpoint to sign the TLS handshake, if any.
+    pub fn local_signature_scheme(&self) -> Option<SignatureScheme> {
+        self.local_signature_scheme
+    }
+
+    /// Returns the signature scheme used by the peer to sign the TLS handshake, if any.
+    pub fn peer_signature_scheme(&self) -> Option<SignatureScheme> {
+        self.peer_signature_scheme
+    }
+
+    pub(crate) fn set_local_signature_scheme(&mut self, scheme: SignatureScheme) {
+        self.local_signature_scheme = Some(scheme);
+    }
+
+    pub(crate) fn set_peer_signature_scheme(&mut self, scheme: SignatureScheme) {
+        self.peer_signature_scheme = Some(scheme);
     }
 
     /// Retrieves the protocol agreed with the peer via ALPN.
@@ -407,8 +643,9 @@ impl CommonState {
     fn send_single_fragment(&mut self, m: OutboundPlainMessage<'_>) {
         if m.typ == ContentType::Alert {
             // Alerts are always sendable -- never quashed by a PreEncryptAction.
+            let inner_type = self.outbound_message_callback_inner_type(m.typ);
             let em = self.record_layer.encrypt_outgoing(m);
-            self.queue_tls_message(em);
+            self.queue_tls_message(em, inner_type);
             return;
         }
 
@@ -416,8 +653,18 @@ impl CommonState {
             return;
         }
 
+        let inner_type = self.outbound_message_callback_inner_type(m.typ);
         let em = self.record_layer.encrypt_outgoing(m);
-        self.queue_tls_message(em);
+        self.queue_tls_message(em, inner_type);
+    }
+
+    fn outbound_message_callback_inner_type(
+        &self,
+        content_type: ContentType,
+    ) -> Option<(ContentType, Vec<u8>)> {
+        (self.negotiated_version == Some(ProtocolVersion::TLSv1_3)
+            && self.record_layer.is_encrypting())
+        .then(|| (content_type, Vec::new()))
     }
 
     /// Take the remedial action needed before encrypting the record `add` records after the next.
@@ -504,9 +751,20 @@ impl CommonState {
     }
 
     // Put m into sendable_tls for writing.
-    fn queue_tls_message(&mut self, m: OutboundOpaqueMessage) {
+    fn queue_tls_message(
+        &mut self,
+        m: OutboundOpaqueMessage,
+        inner_type: Option<(ContentType, Vec<u8>)>,
+    ) {
         self.perhaps_write_key_update();
-        self.sendable_tls.append(m.encode());
+        let encoded = m.encode();
+        if let Ok(header) = <[u8; 5]>::try_from(&encoded[..5]) {
+            self.capture_message_callback_header(true, &header);
+        }
+        if let Some((content_type, data)) = inner_type {
+            self.capture_message_callback_inner_type(true, content_type, &data);
+        }
+        self.sendable_tls.append(encoded);
     }
 
     pub(crate) fn perhaps_write_key_update(&mut self) {
@@ -538,16 +796,30 @@ impl CommonState {
                 return;
             }
         }
+        let callback_message = if self.message_callback_events.is_some() {
+            let content_type = m.payload.content_type();
+            let version = m.version;
+            let mut data = Vec::new();
+            if content_type != ContentType::ApplicationData {
+                m.payload.encode(&mut data);
+            }
+            Some((version, content_type, data))
+        } else {
+            None
+        };
         if !must_encrypt {
             let msg = &m.into();
             let iter = self
                 .message_fragmenter
                 .fragment_message(msg);
             for m in iter {
-                self.queue_tls_message(m.to_unencrypted_opaque());
+                self.queue_tls_message(m.to_unencrypted_opaque(), None);
             }
         } else {
             self.send_msg_encrypt(m.into());
+        }
+        if let Some((version, content_type, data)) = callback_message {
+            self.capture_message_callback_payload(true, version, content_type, &data);
         }
     }
 

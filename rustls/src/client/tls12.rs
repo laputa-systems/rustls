@@ -92,6 +92,7 @@ mod server_hello {
             let ClientHelloInput {
                 config,
                 server_name,
+                session_id,
                 ..
             } = self.input;
 
@@ -138,7 +139,7 @@ mod server_hello {
 
             // See if we're successfully resuming.
             if let Some(resuming) = resuming_session {
-                if resuming.session_id == server_hello.session_id {
+                if session_id == server_hello.session_id {
                     debug!("Server agreed to resume");
 
                     // Is the server telling lies about the ciphersuite?
@@ -577,6 +578,7 @@ fn emit_certverify(
 
     let scheme = signer.scheme();
     let sig = signer.sign(&message)?;
+    common.set_local_signature_scheme(scheme);
     let body = DigitallySignedStruct::new(scheme, sig);
 
     let m = Message {
@@ -607,6 +609,7 @@ fn emit_finished(
 ) {
     let vh = transcript.current_hash();
     let verify_data = secrets.client_verify_data(&vh);
+    common.set_tls_unique_if_none(&verify_data);
     let verify_data_payload = Payload::new(verify_data);
 
     let f = Message {
@@ -932,6 +935,8 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
                         .send_cert_verify_error_alert(err)
                 })?
         };
+        cx.common
+            .set_peer_signature_scheme(st.server_kx.kx_sig.scheme);
         cx.common.peer_certificates = Some(st.server_cert.cert_chain.into_owned());
 
         // 3.
@@ -1220,9 +1225,14 @@ impl ExpectFinished {
             return;
         };
 
+        let session_id = self
+            .resuming_session
+            .as_ref()
+            .map(|session| session.session_id)
+            .unwrap_or(self.session_id);
         let session_value = persist::Tls12ClientSessionValue::new(
             self.secrets.suite(),
-            self.session_id,
+            session_id,
             ticket,
             self.secrets.master_secret(),
             cx.common
@@ -1273,6 +1283,8 @@ impl State<ClientConnectionData> for ExpectFinished {
                         .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError));
                 }
             };
+
+        cx.common.set_tls_unique_if_none(finished.bytes());
 
         // Hash this message too.
         st.transcript.add_message(&m);

@@ -1199,6 +1199,7 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
                     .send_cert_verify_error_alert(err)
             })?;
 
+        cx.common.set_peer_signature_scheme(cert_verify.scheme);
         cx.common.peer_certificates = Some(self.server_cert.cert_chain.into_owned());
         self.transcript.add_message(&m);
 
@@ -1272,11 +1273,13 @@ fn emit_certificate_tls13(
 fn emit_certverify_tls13(
     flight: &mut HandshakeFlightTls13<'_>,
     signer: &dyn Signer,
+    common: &mut CommonState,
 ) -> Result<(), Error> {
     let message = construct_client_verify_message(&flight.transcript.current_hash());
 
     let scheme = signer.scheme();
     let sig = signer.sign(message.as_ref())?;
+    common.set_local_signature_scheme(scheme);
     let dss = DigitallySignedStruct::new(scheme, sig);
 
     flight.add(HandshakeMessagePayload(
@@ -1399,7 +1402,7 @@ impl State<ClientConnectionData> for ExpectFinished {
                     } else {
                         emit_certificate_tls13(&mut flight, Some(&certkey), auth_context);
                     }
-                    emit_certverify_tls13(&mut flight, signer.as_ref())?;
+                    emit_certverify_tls13(&mut flight, signer.as_ref(), cx.common)?;
                 }
             }
         }
@@ -1415,6 +1418,7 @@ impl State<ClientConnectionData> for ExpectFinished {
 
         emit_finished_tls13(&mut flight, &verify_data);
         flight.finish(cx.common);
+        cx.common.set_tls_unique_if_none(verify_data.as_ref());
 
         /* We're now sure this server supports TLS1.3.  But if we run out of TLS1.3 tickets
          * when connecting to it again, we definitely don't want to attempt a TLS1.2 resumption. */

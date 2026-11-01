@@ -218,6 +218,11 @@ impl Tls12ClientSessionValue {
         self.extended_ms
     }
 
+    /// Return the TLS 1.2 session ID.
+    pub fn session_id(&self) -> &[u8] {
+        self.session_id.as_ref()
+    }
+
     pub(crate) fn suite(&self) -> &'static Tls12CipherSuite {
         self.suite
     }
@@ -268,6 +273,26 @@ impl ClientSessionCommon {
             server_cert_verifier: Arc::downgrade(server_cert_verifier),
             client_creds: Arc::downgrade(client_creds),
         }
+    }
+
+    /// Return the time at which this session was created, in seconds since the Unix epoch.
+    pub fn time(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Return the lifetime advertised for this session, in seconds.
+    pub fn timeout(&self) -> u32 {
+        self.lifetime_secs
+    }
+
+    /// Return whether this session contains a non-empty ticket.
+    pub fn has_ticket(&self) -> bool {
+        !self.ticket.0.is_empty()
+    }
+
+    /// Return the ticket lifetime hint, or zero when this session has no ticket.
+    pub fn ticket_lifetime_hint(&self) -> u32 {
+        if self.has_ticket() { self.lifetime_secs } else { 0 }
     }
 
     pub(crate) fn compatible_config(

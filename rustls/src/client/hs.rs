@@ -94,10 +94,11 @@ impl ClientHelloInput {
                         // If we have a ticket, we use the sessionid as a signal that
                         // we're  doing an abbreviated handshake.  See section 3.4 in
                         // RFC5077.
-                        if !inner.ticket().0.is_empty() {
-                            inner.session_id = SessionId::random(config.provider.secure_random)?;
+                        if inner.has_ticket() {
+                            Some(SessionId::random(config.provider.secure_random)?)
+                        } else {
+                            Some(inner.session_id)
                         }
-                        Some(inner.session_id)
                     }
                     _ => None,
                 }

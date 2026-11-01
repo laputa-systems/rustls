@@ -843,6 +843,7 @@ mod client_hello {
 
         let scheme = signer.scheme();
         let sig = signer.sign(message.as_ref())?;
+        common.set_local_signature_scheme(scheme);
 
         let cv = DigitallySignedStruct::new(scheme, sig);
 
@@ -1188,20 +1189,24 @@ impl State<ServerConnectionData> for ExpectCertificateVerify {
     where
         Self: 'm,
     {
-        let rc = {
+        let (rc, signature_scheme) = {
             let sig = require_handshake_msg!(
                 m,
                 HandshakeType::CertificateVerify,
                 HandshakePayload::CertificateVerify
             )?;
+            let signature_scheme = sig.scheme;
             let handshake_hash = self.transcript.current_hash();
             self.transcript.abandon_client_auth();
             let certs = &self.client_cert;
             let msg = construct_client_verify_message(&handshake_hash);
 
-            self.config
-                .verifier
-                .verify_tls13_signature(msg.as_ref(), &certs[0], sig)
+            (
+                self.config
+                    .verifier
+                    .verify_tls13_signature(msg.as_ref(), &certs[0], sig),
+                signature_scheme,
+            )
         };
 
         if let Err(e) = rc {
@@ -1211,6 +1216,7 @@ impl State<ServerConnectionData> for ExpectCertificateVerify {
         }
 
         trace!("client CertificateVerify OK");
+        cx.common.set_peer_signature_scheme(signature_scheme);
         cx.common.peer_certificates = Some(self.client_cert);
 
         self.transcript.add_message(&m);
@@ -1406,6 +1412,8 @@ impl State<ServerConnectionData> for ExpectFinished {
                     .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError));
             }
         };
+
+        cx.common.set_tls_unique_if_none(finished.bytes());
 
         // Note: future derivations include Client Finished, but not the
         // main application data keying.

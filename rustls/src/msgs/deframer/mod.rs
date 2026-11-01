@@ -73,10 +73,14 @@ impl<'a> Iterator for DeframerIter<'a> {
         let (consumed, remainder) = mem::take(&mut self.buf).split_at_mut(end);
         self.buf = remainder;
         self.consumed += end;
+        let header = consumed[..HEADER_SIZE]
+            .try_into()
+            .expect("TLS record header has fixed size");
 
-        Some(Ok(InboundOpaqueMessage::new(
+        Some(Ok(InboundOpaqueMessage::new_with_header(
             typ,
             version,
+            header,
             &mut consumed[HEADER_SIZE..],
         )))
     }
