@@ -598,6 +598,7 @@ impl ServerConfig {
 #[cfg(feature = "std")]
 mod connection {
     use alloc::boxed::Box;
+    use alloc::vec::Vec;
     use core::fmt;
     use core::fmt::{Debug, Formatter};
     use core::ops::{Deref, DerefMut};
@@ -609,6 +610,7 @@ mod connection {
     };
     use crate::common_state::{CommonState, Context, Side};
     use crate::conn::{ConnectionCommon, ConnectionCore};
+    use crate::enums::ProtocolVersion;
     use crate::error::Error;
     use crate::server::hs;
     use crate::suites::ExtractedSecrets;
@@ -653,10 +655,19 @@ mod connection {
         /// Make a new ServerConnection.  `config` controls how
         /// we behave in the TLS protocol.
         pub fn new(config: Arc<ServerConfig>) -> Result<Self, Error> {
+            Self::new_with_message_callback(config, false)
+        }
+
+        /// Makes a new ServerConnection with optional bounded message event capture.
+        pub fn new_with_message_callback(
+            config: Arc<ServerConfig>,
+            enabled: bool,
+        ) -> Result<Self, Error> {
             Ok(Self {
                 inner: ConnectionCommon::from(ConnectionCore::for_server(
                     config,
                     ServerExtensionsInput::default(),
+                    enabled,
                 )?),
             })
         }
@@ -831,20 +842,45 @@ mod connection {
     impl Default for Acceptor {
         /// Return an empty Acceptor, ready to receive bytes from a new client connection.
         fn default() -> Self {
+            Self::new_with_message_callback(false)
+        }
+    }
+
+    impl Acceptor {
+        /// Returns an empty Acceptor that can capture bounded message callback events.
+        pub fn new_with_message_callback(enabled: bool) -> Self {
+            let mut common_state = CommonState::new(Side::Server);
+            common_state.set_message_callback_enabled(enabled);
+            common_state.set_message_callback_version(ProtocolVersion::TLSv1_3);
             Self {
                 inner: Some(
                     ConnectionCore::new(
                         Box::new(Accepting),
                         ServerConnectionData::default(),
-                        CommonState::new(Side::Server),
+                        common_state,
                     )
                     .into(),
                 ),
             }
         }
-    }
 
-    impl Acceptor {
+        /// Enables or disables bounded capture of TLS message callback events.
+        pub fn set_message_callback_enabled(&mut self, enabled: bool) {
+            if let Some(connection) = self.inner.as_mut() {
+                connection.set_message_callback_enabled(enabled);
+            }
+        }
+
+        /// Drains captured TLS message callback events, or returns `None` after overflow.
+        pub fn take_message_callback_events(
+            &mut self,
+        ) -> Option<Vec<(bool, u16, u16, i32, Vec<u8>)>> {
+            self.inner
+                .as_mut()
+                .map(ConnectionCommon::take_message_callback_events)
+                .unwrap_or_else(|| Some(Vec::new()))
+        }
+
         /// Read TLS content from `rd`.
         ///
         /// Returns an error if this `Acceptor` has already yielded an [`Accepted`]. For more details,
@@ -963,6 +999,7 @@ impl UnbufferedServerConnection {
             inner: UnbufferedConnectionCommon::from(ConnectionCore::for_server(
                 config,
                 ServerExtensionsInput::default(),
+                false,
             )?),
         })
     }
@@ -1027,6 +1064,18 @@ pub struct Accepted {
 }
 
 impl Accepted {
+    /// Enables or disables bounded capture of TLS message callback events.
+    pub fn set_message_callback_enabled(&mut self, enabled: bool) {
+        self.connection.set_message_callback_enabled(enabled);
+    }
+
+    /// Drains captured TLS message callback events, or returns `None` after overflow.
+    pub fn take_message_callback_events(
+        &mut self,
+    ) -> Option<Vec<(bool, u16, u16, i32, Vec<u8>)>> {
+        self.connection.take_message_callback_events()
+    }
+
     /// Get the [`ClientHello`] for this connection.
     pub fn client_hello(&self) -> ClientHello<'_> {
         let payload = Self::client_hello_payload(&self.message);
@@ -1051,6 +1100,30 @@ impl Accepted {
         ch
     }
 
+    /// Return whether the client hello offers the requested protocol version.
+    pub fn offers_protocol_version(&self, version: ProtocolVersion) -> bool {
+        let hello = Self::client_hello_payload(&self.message);
+        if let Some(versions) = &hello.supported_versions {
+            match version {
+                ProtocolVersion::TLSv1_3 => versions.tls13,
+                ProtocolVersion::TLSv1_2 => versions.tls12,
+                _ => false,
+            }
+        } else {
+            version == ProtocolVersion::TLSv1_2
+                && u16::from(hello.client_version) >= u16::from(ProtocolVersion::TLSv1_2)
+        }
+    }
+
+    /// Reject the client hello with the selected alert.
+    pub fn reject(mut self, alert: crate::AlertDescription) -> AcceptedAlert {
+        self.connection.core.common_state.send_fatal_alert(
+            alert,
+            Error::General("server name callback rejected connection".into()),
+        );
+        AcceptedAlert::from(self.connection)
+    }
+
     /// Convert the [`Accepted`] into a [`ServerConnection`].
     ///
     /// Takes the state returned from [`Acceptor::accept()`] as well as the [`ServerConfig`] and
@@ -1058,9 +1131,20 @@ impl Accepted {
     /// configuration-dependent validation of the received `ClientHello` message fails.
     #[cfg(feature = "std")]
     pub fn into_connection(
-        mut self,
+        self,
         config: Arc<ServerConfig>,
     ) -> Result<ServerConnection, (Error, AcceptedAlert)> {
+        self.into_connection_with_message_callback(config, false)
+    }
+
+    /// Converts the [`Accepted`] into a [`ServerConnection`] with bounded event capture enabled.
+    #[cfg(feature = "std")]
+    pub fn into_connection_with_message_callback(
+        mut self,
+        config: Arc<ServerConfig>,
+        enabled: bool,
+    ) -> Result<ServerConnection, (Error, AcceptedAlert)> {
+        self.connection.set_message_callback_enabled(enabled);
         if let Err(err) = self
             .connection
             .set_max_fragment_size(config.max_fragment_size)
@@ -1222,8 +1306,13 @@ impl ConnectionCore<ServerConnectionData> {
     pub(crate) fn for_server(
         config: Arc<ServerConfig>,
         extra_exts: ServerExtensionsInput<'static>,
+        message_callback_enabled: bool,
     ) -> Result<Self, Error> {
         let mut common = CommonState::new(Side::Server);
+        if message_callback_enabled {
+            common.set_message_callback_enabled(true);
+            common.set_message_callback_version(ProtocolVersion::TLSv1_3);
+        }
         common.set_max_fragment_size(config.max_fragment_size)?;
         common.enable_secret_extraction = config.enable_secret_extraction;
         common.fips = config.fips();

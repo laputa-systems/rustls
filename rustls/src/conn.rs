@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::mem;
 use core::ops::{Deref, DerefMut, Range};
@@ -48,6 +49,27 @@ mod connection {
     }
 
     impl Connection {
+        /// Enables or disables bounded capture of TLS message callback events.
+        pub fn set_message_callback_enabled(&mut self, enabled: bool) {
+            match self {
+                Self::Client(conn) => conn.set_message_callback_enabled(enabled),
+                Self::Server(conn) => conn.set_message_callback_enabled(enabled),
+            }
+        }
+
+        /// Drains captured TLS message callback events, or returns `None` after overflow.
+        ///
+        /// Each tuple contains write direction, protocol version, content type, message type,
+        /// and the bytes supplied by the TLS record or message layer.
+        pub fn take_message_callback_events(
+            &mut self,
+        ) -> Option<Vec<(bool, u16, u16, i32, Vec<u8>)>> {
+            match self {
+                Self::Client(conn) => conn.take_message_callback_events(),
+                Self::Server(conn) => conn.take_message_callback_events(),
+            }
+        }
+
         /// Read TLS content from `rd`.
         ///
         /// See [`ConnectionCommon::read_tls()`] for more information.
@@ -415,6 +437,18 @@ pub struct ConnectionCommon<Data> {
 }
 
 impl<Data> ConnectionCommon<Data> {
+    /// Drains captured TLS message callback events, or returns `None` after overflow.
+    ///
+    /// Each tuple contains write direction, protocol version, content type, message type,
+    /// and the bytes supplied by the TLS record or message layer.
+    pub fn take_message_callback_events(
+        &mut self,
+    ) -> Option<Vec<(bool, u16, u16, i32, Vec<u8>)>> {
+        self.core
+            .common_state
+            .take_message_callback_events()
+    }
+
     /// Processes any new packets read by a previous call to
     /// [`Connection::read_tls`].
     ///
@@ -971,6 +1005,14 @@ impl<Data> ConnectionCore<Data> {
                 message
             });
         self.common_state.aligned_handshake = self.hs_deframer.is_aligned();
+        if let Some(message) = message.as_ref() {
+            self.common_state.capture_message_callback_message(
+                false,
+                message.version,
+                message.typ,
+                message.payload,
+            );
+        }
         message
     }
 
@@ -996,6 +1038,8 @@ impl<Data> ConnectionCore<Data> {
                     Ok(None) => return Ok(None),
                     Err(err) => return Err(self.handle_deframe_error(err, state)),
                 };
+                self.common_state
+                    .capture_message_callback_header(false, &message.header);
 
                 let allowed_plaintext = match message.typ {
                     // CCS messages are always plaintext.
@@ -1054,8 +1098,26 @@ impl<Data> ConnectionCore<Data> {
                     self.common_state.send_close_notify();
                 }
 
+                if plaintext.version == ProtocolVersion::TLSv1_3 {
+                    self.common_state.capture_message_callback_inner_type(
+                        false,
+                        plaintext.typ,
+                        &[],
+                    );
+                }
+
                 break (plaintext, iter.bytes_consumed());
             };
+            if message.typ != ContentType::Handshake
+                && message.typ != ContentType::ApplicationData
+            {
+                self.common_state.capture_message_callback_message(
+                    false,
+                    message.version,
+                    message.typ,
+                    message.payload,
+                );
+            }
 
             if !self.hs_deframer.is_aligned() && message.typ != ContentType::Handshake {
                 // "Handshake messages MUST NOT be interleaved with other record

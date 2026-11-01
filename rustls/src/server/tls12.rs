@@ -209,6 +209,7 @@ mod client_hello {
                 selected_kxg,
                 server_key.get_key(),
                 &self.randoms,
+                cx.common,
             )?;
             let doing_client_auth = emit_certificate_req(&mut flight, &self.config)?;
             emit_server_hello_done(&mut flight);
@@ -371,6 +372,7 @@ mod client_hello {
         selected_group: &'static dyn SupportedKxGroup,
         signing_key: &dyn sign::SigningKey,
         randoms: &ConnectionRandoms,
+        common: &mut CommonState,
     ) -> Result<Box<dyn ActiveKeyExchange>, Error> {
         let kx = selected_group.start()?;
         let kx_params = ServerKeyExchangeParams::new(&*kx);
@@ -385,6 +387,7 @@ mod client_hello {
             .ok_or_else(|| Error::General("incompatible signing key".to_string()))?;
         let sigscheme = signer.scheme();
         let sig = signer.sign(&msg)?;
+        common.set_local_signature_scheme(sigscheme);
 
         let skx = ServerKeyExchangePayload::from(ServerKeyExchange {
             params: kx_params,
@@ -636,14 +639,14 @@ impl State<ServerConnectionData> for ExpectCertificateVerify<'_> {
     where
         Self: 'm,
     {
-        let rc = {
+        let (rc, signature_scheme) = {
             let sig = require_handshake_msg!(
                 m,
                 HandshakeType::CertificateVerify,
                 HandshakePayload::CertificateVerify
             )?;
-
-            match self.transcript.take_handshake_buf() {
+            let signature_scheme = sig.scheme;
+            let result = match self.transcript.take_handshake_buf() {
                 Some(msgs) => {
                     let certs = &self.client_cert;
                     self.config
@@ -661,7 +664,8 @@ impl State<ServerConnectionData> for ExpectCertificateVerify<'_> {
                         Error::General("client authentication not set up".into()),
                     ));
                 }
-            }
+            };
+            (result, signature_scheme)
         };
 
         if let Err(e) = rc {
@@ -671,6 +675,7 @@ impl State<ServerConnectionData> for ExpectCertificateVerify<'_> {
         }
 
         trace!("client CertificateVerify OK");
+        cx.common.set_peer_signature_scheme(signature_scheme);
         cx.common.peer_certificates = Some(self.client_cert.into_owned());
 
         self.transcript.add_message(&m);
@@ -827,6 +832,7 @@ fn emit_finished(
 ) {
     let vh = transcript.current_hash();
     let verify_data = secrets.server_verify_data(&vh);
+    common.set_tls_unique_if_none(&verify_data);
     let verify_data_payload = Payload::new(verify_data);
 
     let f = Message {
@@ -876,6 +882,8 @@ impl State<ServerConnectionData> for ExpectFinished {
                         .send_fatal_alert(AlertDescription::DecryptError, Error::DecryptError));
                 }
             };
+
+        cx.common.set_tls_unique_if_none(finished.bytes());
 
         // Save connection, perhaps
         if !self.resuming && !self.session_id.is_empty() {

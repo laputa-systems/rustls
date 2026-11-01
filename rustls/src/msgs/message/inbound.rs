@@ -11,6 +11,7 @@ use crate::msgs::fragmenter::MAX_FRAGMENT_LEN;
 pub struct InboundOpaqueMessage<'a> {
     pub typ: ContentType,
     pub version: ProtocolVersion,
+    pub header: [u8; 5],
     pub payload: BorrowedPayload<'a>,
 }
 
@@ -19,9 +20,24 @@ impl<'a> InboundOpaqueMessage<'a> {
     ///
     /// `payload` is borrowed.
     pub fn new(typ: ContentType, version: ProtocolVersion, payload: &'a mut [u8]) -> Self {
+        let payload_len = payload.len() as u16;
+        let mut header = [0; 5];
+        header[0] = u8::from(typ);
+        header[1..3].copy_from_slice(&version.to_array());
+        header[3..5].copy_from_slice(&payload_len.to_be_bytes());
+        Self::new_with_header(typ, version, header, payload)
+    }
+
+    pub(crate) fn new_with_header(
+        typ: ContentType,
+        version: ProtocolVersion,
+        header: [u8; 5],
+        payload: &'a mut [u8],
+    ) -> Self {
         Self {
             typ,
             version,
+            header,
             payload: BorrowedPayload(payload),
         }
     }

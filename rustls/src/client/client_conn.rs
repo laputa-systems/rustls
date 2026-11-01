@@ -737,11 +737,34 @@ mod connection {
             Self::new_with_alpn(config.clone(), name, config.alpn_protocols.clone())
         }
 
+        /// Makes a new client connection and optionally captures bounded message callback events.
+        pub fn new_with_message_callback(
+            config: Arc<ClientConfig>,
+            name: ServerName<'static>,
+            enabled: bool,
+        ) -> Result<Self, Error> {
+            Self::new_with_alpn_and_message_callback(
+                config.clone(),
+                name,
+                config.alpn_protocols.clone(),
+                enabled,
+            )
+        }
+
         /// Make a new ClientConnection with custom ALPN protocols.
         pub fn new_with_alpn(
             config: Arc<ClientConfig>,
             name: ServerName<'static>,
             alpn_protocols: Vec<Vec<u8>>,
+        ) -> Result<Self, Error> {
+            Self::new_with_alpn_and_message_callback(config, name, alpn_protocols, false)
+        }
+
+        fn new_with_alpn_and_message_callback(
+            config: Arc<ClientConfig>,
+            name: ServerName<'static>,
+            alpn_protocols: Vec<Vec<u8>>,
+            enabled: bool,
         ) -> Result<Self, Error> {
             Ok(Self {
                 inner: ConnectionCommon::from(ConnectionCore::for_client(
@@ -749,6 +772,7 @@ mod connection {
                     name,
                     ClientExtensionsInput::from_alpn(alpn_protocols),
                     Protocol::Tcp,
+                    enabled,
                 )?),
             })
         }
@@ -873,8 +897,18 @@ impl ConnectionCore<ClientConnectionData> {
         name: ServerName<'static>,
         extra_exts: ClientExtensionsInput<'static>,
         proto: Protocol,
+        message_callback_enabled: bool,
     ) -> Result<Self, Error> {
         let mut common_state = CommonState::new(Side::Client);
+        if message_callback_enabled {
+            common_state.set_message_callback_enabled(true);
+            let callback_version = if config.versions.contains(ProtocolVersion::TLSv1_3) {
+                ProtocolVersion::TLSv1_3
+            } else {
+                ProtocolVersion::TLSv1_2
+            };
+            common_state.set_message_callback_version(callback_version);
+        }
         common_state.set_max_fragment_size(config.max_fragment_size)?;
         common_state.protocol = proto;
         common_state.enable_secret_extraction = config.enable_secret_extraction;
@@ -941,6 +975,7 @@ impl UnbufferedClientConnection {
                 name,
                 extensions,
                 Protocol::Tcp,
+                false,
             )?),
         })
     }
