@@ -836,7 +836,13 @@ impl CommonState {
         desc: AlertDescription,
         err: impl Into<Error>,
     ) -> Error {
-        debug_assert!(!self.sent_fatal_alert);
+        // Lane adaptation: a debug assertion cannot stand for control flow
+        // in a `panic = "abort"` engine; a second fatal alert is dropped
+        // instead of aborting the interpreter. The peer acts on the first
+        // fatal alert, matching `send_close_notify` above.
+        if self.sent_fatal_alert {
+            return err.into();
+        }
         let m = Message::build_alert(AlertLevel::Fatal, desc);
         self.send_msg(m, self.record_layer.is_encrypting());
         self.sent_fatal_alert = true;
