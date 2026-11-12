@@ -7,7 +7,6 @@ use pki_types::{DnsName, FipsStatus};
 use super::config::ServerConfig;
 use crate::common_state::{CommonState, Event, Side};
 use crate::conn::private::SideOutput;
-use crate::conn::split::SplitConnection;
 use crate::conn::{
     Accepted, Connection, KeyingMaterialExporter, NeedsInput, Processed, ServerNext, SideData, Tcp,
     Transport, VerifyPeerIdentity,
@@ -89,9 +88,7 @@ pub enum ServerHandshake {
     EarlyData(ReceivedEarlyData),
 
     /// The handshake is complete.
-    ///
-    /// Now see [`SplitConnection`] to continue the connection.
-    Complete(SplitConnection<ServerSide>),
+    Complete(Connection<ServerSide, Tcp>),
 }
 
 impl ServerHandshake {
@@ -133,7 +130,7 @@ impl TryFrom<Connection<ServerSide, Tcp>> for ServerHandshake {
 
             ServerNext::VerifyClientIdentity(verify) => Self::VerifyClientIdentity(verify),
 
-            ServerNext::Complete(conn) => Self::Complete(SplitConnection::try_from(conn)?),
+            ServerNext::Complete(conn) => Self::Complete(conn),
         })
     }
 }
@@ -211,7 +208,7 @@ impl fmt::Debug for ServerSide {
 /// The data is received in arbitrary-sized pieces.  Avoid writing your application to be
 /// sensitive to the boundaries.
 ///
-/// [RFC 9846 appendix F.5]: https://datatracker.ietf.org/doc/html/rfc9846#appendix-F.5
+/// [RFC 9846 appendix F.5]: https://www.rfc-editor.org/info/rfc9846#appendix-F.5
 pub struct ReceivedEarlyData {
     data: Vec<u8>,
     conn: Connection<ServerSide, Tcp>,

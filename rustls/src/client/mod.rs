@@ -6,6 +6,7 @@ use core::time::Duration;
 use pki_types::UnixTime;
 use zeroize::Zeroizing;
 
+use crate::compress;
 use crate::crypto::cipher::Payload;
 use crate::crypto::kx::NamedGroup;
 use crate::crypto::{CipherSuite, CryptoProvider, Identity, SelectedCredential, SignatureScheme};
@@ -16,6 +17,7 @@ use crate::msgs::{
     SessionId, SizedPayload,
 };
 use crate::sync::Arc;
+use crate::tls12::Tls12CipherSuite;
 use crate::tls13::Tls13ProtocolSuite;
 use crate::tracing::{debug, trace};
 use crate::verify::{DistinguishedName, VerifiedIdentity};
@@ -24,7 +26,6 @@ pub use crate::webpki::{
     ServerVerifierBuilder, VerifierBuilderError, WebPkiServerVerifier,
     verify_identity_signed_by_trust_anchor, verify_server_name,
 };
-use crate::{Tls12CipherSuite, compress};
 
 mod config;
 pub use config::{
@@ -39,6 +40,7 @@ mod ech;
 pub use ech::{EchConfig, EchGreaseConfig, EchMode, EchStatus};
 
 mod handy;
+#[cfg(feature = "std")]
 pub use handy::ClientSessionMemoryCache;
 
 mod hs;
@@ -123,6 +125,7 @@ pub struct Tls13Session {
     max_early_data_size: u32,
     pub(crate) common: ClientSessionCommon,
     quic_params: SizedPayload<'static, u16, MaybeEmpty>,
+    alpn: Option<ApplicationProtocol<'static>>,
 }
 
 impl Tls13Session {
@@ -144,6 +147,10 @@ impl Tls13Session {
                 max_early_data_size: u32::read(reader)?,
                 common: ClientSessionCommon::read(reader)?,
                 quic_params: SizedPayload::<u16, MaybeEmpty>::read(reader)?.into_owned(),
+                alpn: match u8::read(reader)? {
+                    1 => Some(ApplicationProtocol::read(reader)?.to_owned()),
+                    _ => None,
+                },
             })
         })
     }
@@ -171,6 +178,7 @@ impl Tls13Session {
             quic_params: input
                 .quic_params
                 .unwrap_or_else(|| SizedPayload::from(Payload::new(Vec::new()))),
+            alpn: input.alpn,
         }
     }
 
@@ -186,6 +194,12 @@ impl Tls13Session {
         buf.extend_from_slice(&self.max_early_data_size.to_be_bytes());
         self.common.encode(buf);
         self.quic_params.encode(buf);
+        if let Some(alpn) = &self.alpn {
+            1u8.encode(buf);
+            alpn.encode(buf);
+        } else {
+            0u8.encode(buf);
+        }
     }
 
     /// Test only: CAS `max_early_data_size` from `expected` to `desired`
@@ -222,6 +236,7 @@ impl fmt::Debug for Tls13Session {
             max_early_data_size,
             common,
             quic_params,
+            alpn,
         } = self;
         f.debug_struct("Tls13Session")
             .field("suite", suite)
@@ -229,6 +244,7 @@ impl fmt::Debug for Tls13Session {
             .field("max_early_data_size", max_early_data_size)
             .field("common", common)
             .field("quic_params", quic_params)
+            .field("alpn", alpn)
             .finish_non_exhaustive()
     }
 }
@@ -239,6 +255,7 @@ pub(crate) struct Tls13ClientSessionInput {
     pub(crate) suite: Tls13ProtocolSuite,
     pub(crate) peer_identity: VerifiedIdentity<'static>,
     pub(crate) quic_params: Option<SizedPayload<'static, u16, MaybeEmpty>>,
+    pub(crate) alpn: Option<ApplicationProtocol<'static>>,
 }
 
 /// A stored TLS 1.2 client session value.
@@ -525,13 +542,14 @@ mod tests {
                     SubjectPublicKeyInfoDer::from(&b"spki"[..]),
                 )),
                 quic_params: None,
+                alpn: None,
             },
             &[0xa5; 32],
             UnixTime::since_unix_epoch(Duration::from_secs(1)),
         );
         assert_eq!(
             format!("{tls13:?}"),
-            "Tls13Session { suite: Tcp(Tls13CipherSuite { suite: 0xff13, .. }), age_add: 3, max_early_data_size: 0, common: ClientSessionCommon { ticket: 05, epoch: 1, lifetime: 2s, peer_identity: VerifiedIdentity(RawPublicKey(SubjectPublicKeyInfoDer(0x73706b69))) }, quic_params: , .. }"
+            "Tls13Session { suite: Tcp(Tls13CipherSuite { suite: 0xff13, .. }), age_add: 3, max_early_data_size: 0, common: ClientSessionCommon { ticket: 05, epoch: 1, lifetime: 2s, peer_identity: VerifiedIdentity(RawPublicKey(SubjectPublicKeyInfoDer(0x73706b69))) }, quic_params: , alpn: None, .. }"
         );
     }
 }

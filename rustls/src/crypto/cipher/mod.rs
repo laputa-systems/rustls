@@ -124,7 +124,7 @@ pub struct KeyBlockShape {
     ///
     /// `enc_key_length` terminology is from the standard ([RFC 5246 A.6]).
     ///
-    /// [RFC 5246 A.6]: <https://www.rfc-editor.org/rfc/rfc5246#appendix-A.6>
+    /// [RFC 5246 A.6]: <https://www.rfc-editor.org/info/rfc5246#appendix-A.6>
     pub enc_key_len: usize,
 
     /// How long the fixed part of the 'IV' is.
@@ -134,7 +134,7 @@ pub struct KeyBlockShape {
     /// This isn't usually an IV, but we continue the
     /// terminology misuse to match the standard.
     ///
-    /// [RFC 5246 A.6]: <https://www.rfc-editor.org/rfc/rfc5246#appendix-A.6>
+    /// [RFC 5246 A.6]: <https://www.rfc-editor.org/info/rfc5246#appendix-A.6>
     pub fixed_iv_len: usize,
 
     /// This is a non-standard extension which extends the
@@ -431,18 +431,22 @@ pub(crate) struct FakeAead;
 
 #[cfg(test)]
 impl Tls12AeadAlgorithm for FakeAead {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn encrypter(&self, _: AeadKey, _: &[u8], _: &[u8]) -> Box<dyn RecordEncrypter> {
         todo!()
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn decrypter(&self, _: AeadKey, _: &[u8]) -> Box<dyn RecordDecrypter> {
         todo!()
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn key_block_shape(&self) -> KeyBlockShape {
         todo!()
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn extract_keys(
         &self,
         _: AeadKey,

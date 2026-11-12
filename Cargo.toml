@@ -60,9 +60,9 @@ brotli = { version = "9", default-features = false, features = ["std"] }
 brotli-decompressor = "6.0.0"
 byteorder = "1.4.3"
 clap = { version = "4.3.21", features = ["derive", "env"] }
-crabgrind = "0.4"
+crabgrind = "0.5"
 criterion = "0.8"
-graviola = "0.4"
+graviola = "0.4.5"
 hex = "0.4"
 hickory-resolver = { version = "0.26", features = ["https-aws-lc-rs", "webpki-roots"] }
 itertools = "0.15"
@@ -70,7 +70,7 @@ macro_rules_attribute = "0.2"
 mio = { version = "1", features = ["net", "os-poll"] }
 num-bigint = "0.5.0"
 openssl = "0.10"
-pki-types = { package = "rustls-pki-types", version = "1.15", features = ["alloc"] }
+pki-types = { package = "rustls-pki-types", version = "1.16", features = ["alloc"] }
 rayon = "1.7"
 rcgen = { version = "0.14.10", features = ["pem", "aws_lc_rs"], default-features = false }
 regex = "1"

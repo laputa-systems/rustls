@@ -9,7 +9,9 @@ use zeroize::Zeroize;
 
 use super::config::ServerConfig;
 use super::hs::ServerState;
-use super::{CommonServerSessionValue, ServerSessionKey, ServerSessionValue};
+use super::{
+    CommonServerSessionValue, STATEFUL_SESSION_LIFETIME, ServerSessionKey, ServerSessionValue,
+};
 use crate::ConnectionTrafficSecrets;
 use crate::check::inappropriate_message;
 use crate::common_state::{Event, HandshakeFlightTls12, HandshakeKind, Output, OutputEvent, Side};
@@ -88,7 +90,7 @@ mod client_hello {
             // "RFC 4492 specified that if this extension is missing,
             // it means that only the uncompressed point format is
             // supported"
-            // - <https://datatracker.ietf.org/doc/html/rfc8422#section-5.1.2>
+            // - <https://www.rfc-editor.org/info/rfc8422#section-5.1.2>
             let supported_ec_point_formats = input
                 .client_hello
                 .ec_point_formats
@@ -115,6 +117,7 @@ mod client_hello {
                 st.sni.as_ref(),
                 st.using_ems,
                 suite,
+                st.config.current_time()?,
                 &st.config,
             );
 
@@ -215,6 +218,7 @@ mod client_hello {
         sni: Option<&DnsName<'_>>,
         using_ems: bool,
         suite: &'static Tls12CipherSuite,
+        now: UnixTime,
         config: &ServerConfig,
     ) -> (bool, Option<Tls12ServerSessionValue<'static>>) {
         // First, check for a ticket that decrypts
@@ -261,6 +265,17 @@ mod client_hello {
             .common
             .can_resume(suite.common.suite, sni)
         {
+            return (ticket, None);
+        }
+
+        // Tickets are bounded by the ticketer's key rotation; sessions from
+        // `session_storage` by the lifetime we advertise for them.
+        if !ticket
+            && session
+                .common
+                .has_expired(now, STATEFUL_SESSION_LIFETIME)
+        {
+            debug!("stored session has expired");
             return (ticket, None);
         }
 

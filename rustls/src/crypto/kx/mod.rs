@@ -215,7 +215,7 @@ impl HybridLayout {
 ///
 /// This type carries both configuration and implementation. Specifically,
 /// it has a TLS-level name expressed using the [`NamedGroup`] enum, and
-/// a function which produces a [`ActiveKeyExchange`].
+/// a function which produces a [`StartedKeyExchange`].
 ///
 /// Compare with [`NamedGroup`], which carries solely a protocol identifier.
 pub trait SupportedKxGroup: Send + Sync + Debug {
@@ -353,7 +353,7 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// in a small order subgroup).
     ///
     /// If the key exchange algorithm is FFDHE, the result must be left-padded with zeros,
-    /// as required by [RFC 9846](https://www.rfc-editor.org/rfc/rfc9846#section-7.4.1)
+    /// as required by [RFC 9846](https://www.rfc-editor.org/info/rfc9846#section-7.4.1)
     /// (see [`complete_for_tls_version()`](Self::complete_for_tls_version) for more details).
     ///
     /// The shared secret is returned as a [`SharedSecret`] which can be constructed
@@ -368,10 +368,10 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// shared secret in TLS 1.2 and TLS 1.3 (ECDHE key exchange is the same in TLS 1.2 and TLS 1.3):
     ///
     /// In TLS 1.2, the calculated secret is required to be stripped of leading zeros
-    /// [(RFC 5246)](https://www.rfc-editor.org/rfc/rfc5246#section-8.1.2).
+    /// [(RFC 5246)](https://www.rfc-editor.org/info/rfc5246#section-8.1.2).
     ///
     /// In TLS 1.3, the calculated secret is required to be padded with leading zeros to be the same
-    /// byte-length as the group modulus [(RFC 9846)](https://www.rfc-editor.org/rfc/rfc9846#section-7.4.1).
+    /// byte-length as the group modulus [(RFC 9846)](https://www.rfc-editor.org/info/rfc9846#section-7.4.1).
     ///
     /// The default implementation of this method delegates to [`complete()`](Self::complete) assuming it is
     /// implemented for TLS 1.3 (i.e., for FFDHE KX, removes padding as needed). Implementers of this trait
@@ -406,10 +406,10 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// Return the public key being used.
     ///
     /// For ECDHE, the encoding required is defined in
-    /// [RFC 9846 section 4.3.8.2](https://www.rfc-editor.org/rfc/rfc9846#section-4.3.8.2).
+    /// [RFC 9846 section 4.3.8.2](https://www.rfc-editor.org/info/rfc9846#section-4.3.8.2).
     ///
     /// For FFDHE, the encoding required is defined in
-    /// [RFC 9846 section 4.3.8.1](https://www.rfc-editor.org/rfc/rfc9846#section-4.3.8.1).
+    /// [RFC 9846 section 4.3.8.1](https://www.rfc-editor.org/info/rfc9846#section-4.3.8.1).
     fn pub_key(&self) -> &[u8];
 
     /// FFDHE group the `ActiveKeyExchange` is operating in.
@@ -464,25 +464,32 @@ pub trait ActiveKeyExchange: Send + Sync {
 ///    This optimization is permitted and described in
 ///    <https://www.ietf.org/archive/id/draft-ietf-tls-hybrid-design-11.html#section-3.2>
 ///
-/// Both of these only happen if the classical algorithm appears separately in
-/// the client's [`CryptoProvider::kx_groups`][super::CryptoProvider::kx_groups],
-/// and if the hybrid algorithm appears first in that list.
+/// Both of these only happen if the hybrid algorithm is the one chosen for the
+/// client's initial key share (usually the first item in
+/// [`CryptoProvider::kx_groups`][super::CryptoProvider::kx_groups]), and the classical
+/// algorithm also appears separately in that list.
 ///
 /// # How it works
-/// This function is only called by rustls for clients.  It is called when
-/// constructing the initial `ClientHello`.  rustls follows these steps:
+/// This is only used by rustls for TLS1.3 clients.  When constructing a `ClientHello`,
+/// rustls calls [`SupportedKxGroup::start()`] for the chosen group, then follows these steps:
 ///
-/// 1. If the return value is `None`, nothing further happens.
-/// 2. If the given [`NamedGroup`] does not appear in
+/// 1. If that returns [`StartedKeyExchange::Single`], nothing further happens.
+/// 2. If it returns [`StartedKeyExchange::Hybrid`], rustls calls
+///    [`HybridKeyExchange::component()`].  If the returned [`NamedGroup`] is not usable
+///    with TLS1.3, or does not appear in
 ///    [`CryptoProvider::kx_groups`][super::CryptoProvider::kx_groups], nothing further happens.
-/// 3. The given key share is added to the `ClientHello`, after the hybrid entry.
+/// 3. Otherwise, the returned key share is added to the `ClientHello`, after the hybrid entry.
+///    This is skipped if the `ClientHello` is a reply to a `HelloRetryRequest` that
+///    named a specific group.
 ///
 /// Then, one of three things may happen when the server replies to the `ClientHello`:
 ///
-/// 1. The server sends a `HelloRetryRequest`.  Everything is thrown away and
-///    we start again.
+/// 1. The server sends a `HelloRetryRequest`.  If it names a different group, the key
+///    exchange is discarded and the process starts again with that group.  Otherwise,
+///    the same key exchange is offered again in the next `ClientHello`.
 /// 2. The server agrees to our hybrid key exchange: rustls calls
-///    [`ActiveKeyExchange::complete()`] consuming `self`.
+///    [`HybridKeyExchange::into_key_exchange()`] and then
+///    [`ActiveKeyExchange::complete()`] on the result.
 /// 3. The server agrees to our classical key exchange: rustls calls
 ///    [`HybridKeyExchange::complete_component()`] which
 ///    discards the hybrid key data, and completes just the classical key exchange.
@@ -651,7 +658,7 @@ impl From<Vec<u8>> for SharedSecret {
 pub enum KeyExchangeAlgorithm {
     /// Diffie-Hellman Key exchange (with only known parameters as defined in [RFC 7919]).
     ///
-    /// [RFC 7919]: https://datatracker.ietf.org/doc/html/rfc7919
+    /// [RFC 7919]: https://www.rfc-editor.org/info/rfc7919
     DHE,
     /// Key exchange performed via elliptic curve Diffie-Hellman.
     ECDHE,

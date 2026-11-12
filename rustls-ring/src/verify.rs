@@ -64,8 +64,6 @@ pub(crate) static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms =
     };
 
 /// An array of all the verification algorithms exported by this crate.
-///
-/// This will be empty if the crate is built without the `ring` and `aws-lc-rs` features.
 pub static ALL_VERIFICATION_ALGS: &[&dyn SignatureVerificationAlgorithm] = &[
     ECDSA_P256_SHA256,
     ECDSA_P256_SHA384,
@@ -232,7 +230,7 @@ pub static RSA_PKCS1_3072_8192_SHA384: &dyn SignatureVerificationAlgorithm = &Ri
 /// RSA PSS signatures using SHA-256 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA256_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &RingAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,
@@ -243,7 +241,7 @@ pub static RSA_PSS_2048_8192_SHA256_LEGACY_KEY: &dyn SignatureVerificationAlgori
 /// RSA PSS signatures using SHA-384 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA384_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &RingAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,
@@ -254,7 +252,7 @@ pub static RSA_PSS_2048_8192_SHA384_LEGACY_KEY: &dyn SignatureVerificationAlgori
 /// RSA PSS signatures using SHA-512 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA512_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &RingAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,

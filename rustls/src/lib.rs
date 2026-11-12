@@ -236,6 +236,7 @@
 //!       .handle_all(&mut plaintext)
 //!       .unwrap();
 //!     io::stdout().write(&plaintext).unwrap();
+//!     plaintext.clear();
 //!   }
 //!
 //!   if !sent_request && !client.is_handshaking() {
@@ -268,6 +269,8 @@
 //! # Crate features
 //! Here's a list of what features are exposed by the rustls crate and what
 //! they mean.
+//!
+//! - `std` (enabled by default): enable functionality which depends on the Rust `std` library.
 //!
 //! - `tracing` (enabled by default): make the rustls crate depend on the `tracing` crate,
 //!   rustls outputs interesting protocol-level messages at `trace!` and `debug!` level,
@@ -306,6 +309,7 @@ extern crate alloc;
 // is in `std::prelude` but not in `core::prelude`. This helps maintain no-std support as even
 // developers that are not interested in, or aware of, no-std support and / or that never run
 // `cargo build --no-default-features` locally will get errors when they rely on `std::prelude` API.
+#[cfg(feature = "std")]
 extern crate std;
 
 #[cfg(doc)]
@@ -352,6 +356,7 @@ mod conn;
 pub mod crypto;
 pub mod error;
 mod hash_hs;
+#[cfg(feature = "std")]
 mod limited_cache;
 mod tls12;
 mod tls13;
@@ -385,6 +390,7 @@ pub use crate::conn::{
 /// Types related to "split" mode.
 ///
 /// See [`split::SplitConnection`] for more information.
+#[cfg(feature = "std")]
 pub mod split {
     pub use crate::conn::split::{
         FlushSender, ReceiveTraffic, ReceiveTrafficState, ReceivedApplicationData, SendTraffic,
@@ -396,6 +402,7 @@ pub use crate::key_log::{KeyLog, NoKeyLog};
 pub use crate::suites::{
     CipherSuiteCommon, ConnectionTrafficSecrets, ExtractedSecrets, SupportedCipherSuite,
 };
+#[cfg(feature = "std")]
 pub use crate::ticketer::TicketRotator;
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
@@ -431,6 +438,7 @@ pub mod pki_types {
 pub mod quic;
 
 /// APIs for implementing TLS tickets
+#[cfg(feature = "std")]
 pub mod ticketer;
 
 /// This is the rustls manual.
@@ -439,8 +447,10 @@ pub mod manual;
 pub mod time_provider;
 
 /// APIs abstracting over locking primitives.
+#[cfg(feature = "std")]
 pub mod lock;
 
+#[cfg(feature = "std")]
 mod hash_map {
     pub(crate) use std::collections::HashMap;
     pub(crate) use std::collections::hash_map::Entry;

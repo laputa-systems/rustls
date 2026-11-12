@@ -16,10 +16,10 @@ use rustls::quic::{self, ClientHandshake, Quic, QuicEvent, ServerHandshake, Side
 use rustls::server::Tls13Tickets;
 use rustls::{
     CipherSuiteCommon, ClientSide, Connection, HandshakeKind, ServerSide, SideData, SliceInput,
-    Tls13CipherSuite, VecInput,
+    Tls13CipherSuite,
 };
 use rustls_test::{
-    ClientStorage, KeyType, MultiTest, do_handshake, encoding, make_client_config,
+    ClientStorage, KeyType, MultiTest, encoding, make_client_config,
     make_client_config_with_kx_groups, make_pair_for_arc_configs, make_server_config,
     make_server_config_with_kx_groups, server_name,
 };
@@ -908,6 +908,37 @@ fn test_quic_server_rejects_tls12_hello() {
 }
 
 #[test]
+fn test_quic_server_rejects_non_empty_session_id() {
+    let mut server = Connection::new_quic(
+        Arc::new(make_server_config(
+            KeyType::EcdsaP256,
+            &provider::DEFAULT_PROVIDER,
+        )),
+        quic::Version::V2,
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(
+        server
+            .read_hs(&mut SliceInput::new(&mut encoding::client_hello(
+                ProtocolVersion::TLSv1_2,
+                &[0x12; 32],
+                &[0x01, 0xaa],
+                vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+                vec![
+                    encoding::Extension::new_sig_algs(),
+                    encoding::Extension::new_versions(),
+                    encoding::Extension::new_dummy_key_share(),
+                    encoding::Extension::new_kx_groups(),
+                    encoding::Extension::new_quic_transport_params(b"blurgh"),
+                ],
+            )))
+            .err(),
+        Some(PeerMisbehaved::NonEmptySessionIdInQuic.into())
+    );
+}
+
+#[test]
 fn test_quic_client_rejects_tls12_server() {
     let mut client = Arc::new(make_client_config(
         KeyType::EcdsaP256,
@@ -1160,7 +1191,7 @@ fn packet_key_api() {
     use provider::cipher_suite::TLS13_AES_128_GCM_SHA256;
     use rustls::quic::{Keys, Version};
 
-    // Test vectors: https://www.rfc-editor.org/rfc/rfc9001.html#name-client-initial
+    // Test vectors: https://www.rfc-editor.org/info/rfc9001#name-client-initial
     const CONNECTION_ID: &[u8] = &[0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
     const PACKET_NUMBER: u64 = 2;
     const PLAIN_HEADER: &[u8] = &[
@@ -1519,23 +1550,11 @@ fn quic_client_ignores_stored_session_with_non_quic_suite() {
     let storage = Arc::new(ClientStorage::new());
     let mut client_config = make_client_config(KeyType::default(), &tcp_provider);
     client_config.resumption = Resumption::store(storage.clone());
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) = make_pair_for_arc_configs(
+    let (mut client, mut server, mut buf) = make_pair_for_arc_configs(
         &Arc::new(client_config),
         &Arc::new(make_server_config(KeyType::default(), &tcp_provider)),
-        &mut client_output,
     );
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
     assert!(
         storage

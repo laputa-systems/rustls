@@ -3,26 +3,29 @@
 #![allow(clippy::disallowed_types, clippy::duplicate_mod)]
 
 use core::hash::Hasher;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::fmt;
 use std::sync::Arc;
 
-use rustls::client::{ClientCredentialResolver, CredentialRequest, Resumption, TicketRequest};
+use rustls::client::{
+    ClientCredentialResolver, CredentialRequest, Resumption, TicketRequest, Tls12Resumption,
+};
 use rustls::crypto::kx::NamedGroup;
 use rustls::crypto::{CertificateIdentity, Identity, SelectedCredential, TicketProducer};
 use rustls::enums::{CertificateType, ProtocolVersion};
 use rustls::error::{ApiMisuse, Error, PeerMisbehaved};
+use rustls::pki_types::UnixTime;
 use rustls::server::{ServerSessionKey, Tls13Tickets};
+use rustls::time_provider::TimeProvider;
 use rustls::{
     ClientConfig, ClientSide, Connection, HandshakeKind, ServerConfig, ServerSide, Tcp, VecInput,
 };
 use rustls_test::{
-    ClientStorage, ClientStorageOp, ErrorFromPeer, KeyType, MultiTest, ServerConfigExt,
-    do_handshake, do_handshake_collecting_early_data, do_handshake_until_error, make_client_config,
-    make_client_config_with_kx_groups, make_pair, make_pair_for_arc_configs, make_pair_for_configs,
-    make_server_config, make_server_config_with_kx_groups, transfer,
-    webpki_server_verifier_builder,
+    ClientStorage, ClientStorageOp, ErrorFromPeer, HandshakeBuffers, KeyType, MultiTest,
+    ServerConfigExt, make_client_config, make_client_config_with_kx_groups, make_pair,
+    make_pair_for_arc_configs, make_pair_for_configs, make_server_config,
+    make_server_config_with_kx_groups, transfer, webpki_server_verifier_builder,
 };
 
 use super::provider;
@@ -30,54 +33,22 @@ use super::provider;
 #[test]
 fn client_only_attempts_resumption_with_compatible_security() {
     for (base_client_config, server_config, expect) in MultiTest::new(provider::DEFAULT_PROVIDER) {
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&base_client_config, &server_config, &mut client_output);
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&base_client_config, &server_config);
+        buf.handshake(&mut client, &mut server);
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
         // base case
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&base_client_config, &server_config, &mut client_output);
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&base_client_config, &server_config);
+        buf.handshake(&mut client, &mut server);
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Resumed));
 
         // allowed case, using `clone`
         let client_config = ClientConfig::clone(&base_client_config);
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) = make_pair_for_configs(
-            client_config,
-            ServerConfig::clone(&server_config),
-            &mut client_output,
-        );
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_configs(client_config, ServerConfig::clone(&server_config));
+        buf.handshake(&mut client, &mut server);
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Resumed));
 
         // disallowed case: unmatching `client_auth_cert_resolver`
@@ -90,21 +61,9 @@ fn client_only_attempts_resumption_with_compatible_security() {
             .unwrap();
         client_config.resumption = base_client_config.resumption.clone();
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) = make_pair_for_configs(
-            client_config,
-            ServerConfig::clone(&server_config),
-            &mut client_output,
-        );
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_configs(client_config, ServerConfig::clone(&server_config));
+        buf.handshake(&mut client, &mut server);
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
         // disallowed case: unmatching `verifier`
@@ -123,21 +82,9 @@ fn client_only_attempts_resumption_with_compatible_security() {
             .unwrap();
         client_config.resumption = base_client_config.resumption.clone();
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) = make_pair_for_configs(
-            client_config,
-            ServerConfig::clone(&server_config),
-            &mut client_output,
-        );
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_configs(client_config, ServerConfig::clone(&server_config));
+        buf.handshake(&mut client, &mut server);
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
     }
 }
@@ -160,15 +107,32 @@ impl ClientCredentialResolver for ForwardingResolver {
 }
 
 #[test]
+fn tls12_resumption_disabled() {
+    for (provider, second) in [
+        (provider::DEFAULT_TLS12_PROVIDER, HandshakeKind::Full),
+        (provider::DEFAULT_TLS13_PROVIDER, HandshakeKind::Resumed),
+    ] {
+        let mut client_config = make_client_config(KeyType::default(), &provider);
+        client_config.resumption =
+            Resumption::default().tls12_resumption(Tls12Resumption::Disabled);
+        let client_config = Arc::new(client_config);
+        let server_config = Arc::new(make_server_config(KeyType::default(), &provider));
+        for expected in [HandshakeKind::Full, second] {
+            let (mut client, mut server, mut buf) =
+                make_pair_for_arc_configs(&client_config, &server_config);
+            buf.handshake(&mut client, &mut server);
+            assert_eq!(client.handshake_kind(), Some(expected));
+            assert_eq!(server.handshake_kind(), Some(expected));
+        }
+    }
+}
+
+#[test]
 fn resumption_combinations() {
     for (client_config, server_config, expect) in MultiTest::new(provider::DEFAULT_PROVIDER) {
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
         let resumption_data = format!("resumption data {expect:?}");
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
         assert_eq!(
             server
                 .set_resumption_data(&[0u8; 0x8000])
@@ -178,14 +142,7 @@ fn resumption_combinations() {
         server
             .set_resumption_data(resumption_data.as_bytes())
             .unwrap();
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        buf.handshake(&mut client, &mut server);
 
         let expected_kx = expected_kx_for_version(expect.version);
 
@@ -206,18 +163,9 @@ fn resumption_combinations() {
             expected_kx
         );
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        buf.handshake(&mut client, &mut server);
 
         assert_eq!(client.handshake_kind(), Some(HandshakeKind::Resumed));
         assert_eq!(server.handshake_kind(), Some(HandshakeKind::Resumed));
@@ -284,25 +232,15 @@ fn test_client_tls12_no_resume_after_server_downgrade() {
         ServerConfig::builder(provider::DEFAULT_TLS12_PROVIDER.into()).finish(KeyType::default());
     server_config_2.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
 
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
+    let mut buf = HandshakeBuffers::default();
 
     dbg!("handshake 1");
     let mut client_1 = client_config
         .connect("localhost".try_into().unwrap())
-        .build(&mut client_output)
+        .build(&mut buf.client_output)
         .unwrap();
     let mut server_1 = Connection::new(server_config_1).unwrap();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client_1,
-        &mut server_input,
-        &mut server_output,
-        &mut server_1,
-    );
+    buf.handshake(&mut client_1, &mut server_1);
 
     assert_eq!(client_storage.ops().len(), 7);
     println!("hs1 storage ops: {:#?}", client_storage.ops());
@@ -322,17 +260,10 @@ fn test_client_tls12_no_resume_after_server_downgrade() {
     dbg!("handshake 2");
     let mut client_2 = client_config
         .connect("localhost".try_into().unwrap())
-        .build(&mut client_output)
+        .build(&mut buf.client_output)
         .unwrap();
     let mut server_2 = Connection::new(Arc::new(server_config_2)).unwrap();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client_2,
-        &mut server_input,
-        &mut server_output,
-        &mut server_2,
-    );
+    buf.handshake(&mut client_2, &mut server_2);
     println!("hs2 storage ops: {:#?}", client_storage.ops());
     assert_eq!(client_storage.ops().len(), 9);
 
@@ -359,23 +290,11 @@ fn test_tls13_client_resumption_does_not_reuse_tickets() {
     server_config.send_tls13_tickets = Tls13Tickets { default: 5, max: 5 };
     let server_config = Arc::new(server_config);
 
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-
     // first handshake: client obtains 5 tickets from server.
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    do_handshake_until_error(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    )
-    .unwrap();
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake_until_error(&mut client, &mut server)
+        .unwrap();
 
     let ops = shared_storage.ops_and_reset();
     println!("storage {ops:#?}");
@@ -395,13 +314,12 @@ fn test_tls13_client_resumption_does_not_reuse_tickets() {
     // in parallel without knowledge of which will work due to underlying
     // connectivity uncertainty.
     for _ in 0..5 {
-        let mut client_output = Vec::new();
         let mut server_output = Vec::new();
-        let (_client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        transfer(&mut client_output, &mut server_input);
+        let (_client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        transfer(&mut buf.client_output, &mut buf.server_input);
         server
-            .read_tls(&mut server_input, &mut server_output)
+            .read_tls(&mut buf.server_input, &mut server_output)
             .handle_all(&mut Vec::new())
             .unwrap();
 
@@ -410,13 +328,11 @@ fn test_tls13_client_resumption_does_not_reuse_tickets() {
     }
 
     // 6th subsequent handshake: cannot be resumed; we ran out of tickets
-    let mut client_output = Vec::new();
     let mut server_output = Vec::new();
-    let (_client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    transfer(&mut client_output, &mut server_input);
+    let (_client, mut server, mut buf) = make_pair_for_arc_configs(&client_config, &server_config);
+    transfer(&mut buf.client_output, &mut buf.server_input);
     server
-        .read_tls(&mut server_input, &mut server_output)
+        .read_tls(&mut buf.server_input, &mut server_output)
         .handle_all(&mut Vec::new())
         .unwrap();
 
@@ -437,22 +353,10 @@ fn tls13_stateful_resumption() {
     server_config.session_storage = storage.clone();
     let server_config = Arc::new(server_config);
 
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-
     // full handshake
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (full_c2s, full_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (full_c2s, full_s2c) = buf.handshake(&mut client, &mut server);
     assert_eq!(client.tls13_tickets_received(), 2);
     assert_eq!(storage.puts(), 2);
     assert_eq!(storage.gets(), 0);
@@ -470,18 +374,9 @@ fn tls13_stateful_resumption() {
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
 
     // resumed
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (resume_c2s, resume_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (resume_c2s, resume_s2c) = buf.handshake(&mut client, &mut server);
     assert!(resume_c2s > full_c2s);
     assert!(resume_s2c < full_s2c);
     assert_eq!(storage.puts(), 4);
@@ -500,18 +395,9 @@ fn tls13_stateful_resumption() {
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Resumed));
 
     // resumed again
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (resume2_c2s, resume2_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (resume2_c2s, resume2_s2c) = buf.handshake(&mut client, &mut server);
     assert_eq!(resume_s2c, resume2_s2c);
     assert_eq!(resume_c2s, resume2_c2s);
     assert_eq!(storage.puts(), 6);
@@ -548,22 +434,10 @@ fn tls13_stateless_resumption() {
     server_config.session_storage = storage.clone();
     let server_config = Arc::new(server_config);
 
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-
     // full handshake
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (full_c2s, full_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (full_c2s, full_s2c) = buf.handshake(&mut client, &mut server);
     assert_eq!(storage.puts(), 0);
     assert_eq!(storage.gets(), 0);
     assert_eq!(storage.takes(), 0);
@@ -580,18 +454,9 @@ fn tls13_stateless_resumption() {
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
 
     // resumed
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (resume_c2s, resume_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (resume_c2s, resume_s2c) = buf.handshake(&mut client, &mut server);
     assert!(resume_c2s > full_c2s);
     assert!(resume_s2c < full_s2c);
     assert_eq!(storage.puts(), 0);
@@ -610,18 +475,9 @@ fn tls13_stateless_resumption() {
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Resumed));
 
     // resumed again
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let (resume2_c2s, resume2_s2c) = do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    let (resume2_c2s, resume2_s2c) = buf.handshake(&mut client, &mut server);
     assert_eq!(resume_s2c, resume2_s2c);
     assert_eq!(resume_c2s, resume2_c2s);
     assert_eq!(storage.puts(), 0);
@@ -642,12 +498,7 @@ fn tls13_stateless_resumption() {
 
 #[test]
 fn early_data_not_available() {
-    let mut client_output = Vec::new();
-    let (mut client, _) = make_pair(
-        KeyType::default(),
-        &provider::DEFAULT_PROVIDER,
-        &mut client_output,
-    );
+    let (mut client, _, _) = make_pair(KeyType::default(), &provider::DEFAULT_PROVIDER);
     assert!(client.early_data().is_none());
 }
 
@@ -667,24 +518,16 @@ fn early_data_configs() -> (Arc<ClientConfig>, Arc<ServerConfig>) {
 fn resumable_pair(
     client_config: &Arc<ClientConfig>,
     server_config: &Arc<ServerConfig>,
-    client_output: &mut Vec<u8>,
-) -> (Connection<ClientSide, Tcp>, Connection<ServerSide, Tcp>) {
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    let mut warmup_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(client_config, server_config, &mut warmup_output);
-    do_handshake(
-        &mut client_input,
-        &mut warmup_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+) -> (
+    Connection<ClientSide, Tcp>,
+    Connection<ServerSide, Tcp>,
+    HandshakeBuffers,
+) {
+    let (mut client, mut server, mut warmup_io) =
+        make_pair_for_arc_configs(client_config, server_config);
+    warmup_io.handshake(&mut client, &mut server);
 
-    make_pair_for_arc_configs(client_config, server_config, client_output)
+    make_pair_for_arc_configs(client_config, server_config)
 }
 
 /// Processes all input on `server`, returning the received early data and traffic data separately.
@@ -714,26 +557,13 @@ fn first_record_len(tls: &[u8]) -> usize {
 #[test]
 fn early_data_is_available_on_resumption() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
     assert!(client.early_data().is_some());
     assert_eq!(
         client
@@ -746,7 +576,7 @@ fn early_data_is_available_on_resumption() {
         client
             .early_data()
             .unwrap()
-            .write(b"".into(), &mut client_output)
+            .write(b"".into(), &mut buf.client_output)
             .unwrap(),
         0
     );
@@ -754,7 +584,7 @@ fn early_data_is_available_on_resumption() {
         client
             .early_data()
             .unwrap()
-            .write(b"hello".into(), &mut client_output)
+            .write(b"hello".into(), &mut buf.client_output)
             .unwrap(),
         5
     );
@@ -764,15 +594,7 @@ fn early_data_is_available_on_resumption() {
         Some(Error::ApiMisuse(ApiMisuse::ExporterNotAvailable)),
     );
     let mut received_early_data = Vec::new();
-    do_handshake_collecting_early_data(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-        &mut received_early_data,
-    );
+    buf.handshake_collecting_early_data(&mut client, &mut server, &mut received_early_data);
 
     assert_eq!(&received_early_data[..], b"hello");
     let server_early_exporter = server.early_exporter().unwrap();
@@ -813,27 +635,14 @@ fn early_data_not_available_on_server_before_client_hello() {
 #[test]
 fn early_data_is_limited_on_client() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
 
     // warm up
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
     assert!(client.early_data().is_some());
     assert_eq!(
         client
@@ -846,20 +655,12 @@ fn early_data_is_limited_on_client() {
         client
             .early_data()
             .unwrap()
-            .write((&[0xaa; 1234 + 1]).into(), &mut client_output)
+            .write((&[0xaa; 1234 + 1]).into(), &mut buf.client_output)
             .unwrap(),
         1234
     );
     let mut received_early_data = Vec::new();
-    do_handshake_collecting_early_data(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-        &mut received_early_data,
-    );
+    buf.handshake_collecting_early_data(&mut client, &mut server, &mut received_early_data);
 
     assert_eq!(&received_early_data[..], [0xaa; 1234]);
 }
@@ -876,33 +677,18 @@ fn early_data_configs_allowing_client_to_send_excess_data() -> (Arc<ClientConfig
     let client_config = Arc::new(client_config);
 
     // warm up
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     (client_config, server_config)
 }
 
 #[test]
 fn server_detects_excess_early_data() {
     let (client_config, server_config) = early_data_configs_allowing_client_to_send_excess_data();
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
     assert!(client.early_data().is_some());
     assert_eq!(
         client
@@ -915,19 +701,12 @@ fn server_detects_excess_early_data() {
         client
             .early_data()
             .unwrap()
-            .write((&[0xaa; 2024]).into(), &mut client_output)
+            .write((&[0xaa; 2024]).into(), &mut buf.client_output)
             .unwrap(),
         2024
     );
     assert_eq!(
-        do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server
-        ),
+        buf.handshake_until_error(&mut client, &mut server),
         Err(ErrorFromPeer::Server(Error::PeerMisbehaved(
             PeerMisbehaved::TooMuchEarlyDataReceived
         ))),
@@ -940,10 +719,9 @@ fn server_detects_excess_streamed_early_data() {
     let (client_config, server_config) = early_data_configs_allowing_client_to_send_excess_data();
     let mut server_input = VecInput::default();
 
-    let mut client_output = Vec::new();
     let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
     assert!(client.early_data().is_some());
     assert_eq!(
         client
@@ -956,11 +734,11 @@ fn server_detects_excess_streamed_early_data() {
         client
             .early_data()
             .unwrap()
-            .write((&[0xaa; 1024]).into(), &mut client_output)
+            .write((&[0xaa; 1024]).into(), &mut buf.client_output)
             .unwrap(),
         1024
     );
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     let mut handler = server.read_tls(&mut server_input, &mut server_output);
     let mut received_early_data = Vec::new();
     while let Some(result) = handler.next_early_data() {
@@ -976,11 +754,11 @@ fn server_detects_excess_streamed_early_data() {
         client
             .early_data()
             .unwrap()
-            .write((&[0xbb; 1000]).into(), &mut client_output)
+            .write((&[0xbb; 1000]).into(), &mut buf.client_output)
             .unwrap(),
         1000
     );
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     assert_eq!(
         server
             .read_tls(&mut server_input, &mut server_output)
@@ -993,9 +771,7 @@ fn server_detects_excess_streamed_early_data() {
 #[test]
 fn early_data_and_traffic_are_kept_separate() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_output = Vec::new();
-    let (mut client, mut server) =
-        resumable_pair(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) = resumable_pair(&client_config, &server_config);
     let mut client_input = VecInput::default();
     let mut server_input = VecInput::default();
     let mut server_output = Vec::new();
@@ -1004,20 +780,22 @@ fn early_data_and_traffic_are_kept_separate() {
     let mut early = client.early_data().unwrap();
     assert_eq!(
         early
-            .write(b"hello ".into(), &mut client_output)
+            .write(b"hello ".into(), &mut buf.client_output)
             .unwrap(),
         6
     );
     assert_eq!(
         early
-            .write(b"early".into(), &mut client_output)
+            .write(b"early".into(), &mut buf.client_output)
             .unwrap(),
         5
     );
 
     // Deliver only the ClientHello for now, holding the early data records back.
-    let mut held_back = client_output.split_off(first_record_len(&client_output));
-    transfer(&mut client_output, &mut server_input);
+    let mut held_back = buf
+        .client_output
+        .split_off(first_record_len(&buf.client_output));
+    transfer(&mut buf.client_output, &mut server_input);
     assert_eq!(
         server_read(&mut server, &mut server_input, &mut server_output),
         (Vec::new(), Vec::new())
@@ -1027,17 +805,17 @@ fn early_data_and_traffic_are_kept_separate() {
     // The client finishes its handshake and immediately sends traffic data.
     transfer(&mut server_output, &mut client_input);
     client
-        .read_tls(&mut client_input, &mut client_output)
+        .read_tls(&mut client_input, &mut buf.client_output)
         .handle_all(&mut Vec::new())
         .unwrap();
     assert!(!client.is_handshaking());
     assert!(client.side().is_early_data_accepted());
     client
-        .write(b"normal".into(), &mut client_output)
+        .write(b"normal".into(), &mut buf.client_output)
         .unwrap();
 
     // The server now receives early data, EndOfEarlyData, Finished and traffic data in one go.
-    held_back.append(&mut client_output);
+    held_back.append(&mut buf.client_output);
     transfer(&mut held_back, &mut server_input);
     let mut handler = server.read_tls(&mut server_input, &mut server_output);
     assert_eq!(
@@ -1068,9 +846,9 @@ fn early_data_and_traffic_are_kept_separate() {
 
     // After the handshake, early data is never yielded but traffic still flows.
     client
-        .write(b"more".into(), &mut client_output)
+        .write(b"more".into(), &mut buf.client_output)
         .unwrap();
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     assert_eq!(
         server_read(&mut server, &mut server_input, &mut server_output),
         (Vec::new(), b"more".to_vec())
@@ -1083,9 +861,7 @@ fn early_data_and_traffic_are_kept_separate() {
 #[test]
 fn unread_early_data_is_dropped() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_output = Vec::new();
-    let (mut client, mut server) =
-        resumable_pair(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) = resumable_pair(&client_config, &server_config);
     let mut client_input = VecInput::default();
     let mut server_input = VecInput::default();
     let mut server_output = Vec::new();
@@ -1093,19 +869,19 @@ fn unread_early_data_is_dropped() {
     let mut early = client.early_data().unwrap();
     assert_eq!(
         early
-            .write(b"hello ".into(), &mut client_output)
+            .write(b"hello ".into(), &mut buf.client_output)
             .unwrap(),
         6
     );
     assert_eq!(
         early
-            .write(b"early".into(), &mut client_output)
+            .write(b"early".into(), &mut buf.client_output)
             .unwrap(),
         5
     );
 
     // Skipping `next_early_data()` drops the early data without error.
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     let mut traffic = Vec::new();
     server
         .read_tls(&mut server_input, &mut server_output)
@@ -1115,16 +891,16 @@ fn unread_early_data_is_dropped() {
 
     transfer(&mut server_output, &mut client_input);
     client
-        .read_tls(&mut client_input, &mut client_output)
+        .read_tls(&mut client_input, &mut buf.client_output)
         .handle_all(&mut Vec::new())
         .unwrap();
     assert!(client.side().is_early_data_accepted());
     client
-        .write(b"normal".into(), &mut client_output)
+        .write(b"normal".into(), &mut buf.client_output)
         .unwrap();
 
     // The dropped early data is gone for good; only traffic data is yielded.
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     let mut handler = server.read_tls(&mut server_input, &mut server_output);
     assert!(handler.next_early_data().is_none());
     assert_eq!(
@@ -1144,9 +920,7 @@ fn unread_early_data_is_dropped() {
 #[test]
 fn early_data_is_dropped_by_next_payload() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_output = Vec::new();
-    let (mut client, mut server) =
-        resumable_pair(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) = resumable_pair(&client_config, &server_config);
     let mut client_input = VecInput::default();
     let mut server_input = VecInput::default();
     let mut server_output = Vec::new();
@@ -1154,36 +928,38 @@ fn early_data_is_dropped_by_next_payload() {
     let mut early = client.early_data().unwrap();
     assert_eq!(
         early
-            .write(b"hello ".into(), &mut client_output)
+            .write(b"hello ".into(), &mut buf.client_output)
             .unwrap(),
         6
     );
     assert_eq!(
         early
-            .write(b"early".into(), &mut client_output)
+            .write(b"early".into(), &mut buf.client_output)
             .unwrap(),
         5
     );
 
     // Deliver only the ClientHello, then complete the client's side of the handshake.
-    let mut held_back = client_output.split_off(first_record_len(&client_output));
-    transfer(&mut client_output, &mut server_input);
+    let mut held_back = buf
+        .client_output
+        .split_off(first_record_len(&buf.client_output));
+    transfer(&mut buf.client_output, &mut server_input);
     server
         .read_tls(&mut server_input, &mut server_output)
         .handle_all(&mut Vec::new())
         .unwrap();
     transfer(&mut server_output, &mut client_input);
     client
-        .read_tls(&mut client_input, &mut client_output)
+        .read_tls(&mut client_input, &mut buf.client_output)
         .handle_all(&mut Vec::new())
         .unwrap();
     client
-        .write(b"normal".into(), &mut client_output)
+        .write(b"normal".into(), &mut buf.client_output)
         .unwrap();
 
     // Early data records, EndOfEarlyData, Finished and traffic data arrive together;
     // `next_payload()` skips the early data and yields only the traffic data.
-    held_back.append(&mut client_output);
+    held_back.append(&mut buf.client_output);
     transfer(&mut held_back, &mut server_input);
     let mut handler = server.read_tls(&mut server_input, &mut server_output);
     assert_eq!(
@@ -1204,39 +980,27 @@ fn early_data_is_dropped_by_next_payload() {
 #[test]
 fn next_early_data_yields_nothing_without_early_data() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
 
     // A full (non-resumed) handshake never carries early data.
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
     assert!(client.early_data().is_none());
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut buf.server_input);
     assert_eq!(
-        server_read(&mut server, &mut server_input, &mut server_output),
+        server_read(&mut server, &mut buf.server_input, &mut buf.server_output),
         (Vec::new(), Vec::new())
     );
     let mut received_early_data = Vec::new();
-    do_handshake_collecting_early_data(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-        &mut received_early_data,
-    );
+    buf.handshake_collecting_early_data(&mut client, &mut server, &mut received_early_data);
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
     assert!(received_early_data.is_empty());
 
     client
-        .write(b"normal".into(), &mut client_output)
+        .write(b"normal".into(), &mut buf.client_output)
         .unwrap();
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut buf.server_input);
     assert_eq!(
-        server_read(&mut server, &mut server_input, &mut server_output),
+        server_read(&mut server, &mut buf.server_input, &mut buf.server_output),
         (Vec::new(), b"normal".to_vec())
     );
 }
@@ -1244,52 +1008,40 @@ fn next_early_data_yields_nothing_without_early_data() {
 #[test]
 fn rejected_early_data_is_skipped() {
     let (client_config, server_config) = early_data_configs();
-    let mut client_output = Vec::new();
 
     // Resume against a server that shares the session cache but no longer allows early data.
     let mut rejecting_config = (*server_config).clone();
     rejecting_config.max_early_data_size = 0;
-    let (mut client, _) = resumable_pair(&client_config, &server_config, &mut client_output);
+    let (mut client, _, mut buf) = resumable_pair(&client_config, &server_config);
     let mut server = Connection::new(Arc::new(rejecting_config)).unwrap();
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    let mut server_output = Vec::new();
 
     assert_eq!(
         client
             .early_data()
             .unwrap()
-            .write(b"early".into(), &mut client_output)
+            .write(b"early".into(), &mut buf.client_output)
             .unwrap(),
         5
     );
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut buf.server_input);
     assert_eq!(
-        server_read(&mut server, &mut server_input, &mut server_output),
+        server_read(&mut server, &mut buf.server_input, &mut buf.server_output),
         (Vec::new(), Vec::new())
     );
 
     let mut received_early_data = Vec::new();
-    do_handshake_collecting_early_data(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-        &mut received_early_data,
-    );
+    buf.handshake_collecting_early_data(&mut client, &mut server, &mut received_early_data);
     assert_eq!(server.handshake_kind(), Some(HandshakeKind::Resumed));
     assert!(!client.side().is_early_data_accepted());
     assert!(client.early_data().is_none());
     assert!(received_early_data.is_empty());
 
     client
-        .write(b"normal".into(), &mut client_output)
+        .write(b"normal".into(), &mut buf.client_output)
         .unwrap();
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut buf.server_input);
     assert_eq!(
-        server_read(&mut server, &mut server_input, &mut server_output),
+        server_read(&mut server, &mut buf.server_input, &mut buf.server_output),
         (Vec::new(), b"normal".to_vec())
     );
 }
@@ -1298,20 +1050,19 @@ fn rejected_early_data_is_skipped() {
 fn next_early_data_reports_excess_early_data() {
     let (client_config, server_config) = early_data_configs_allowing_client_to_send_excess_data();
     let mut server_input = VecInput::default();
-    let mut client_output = Vec::new();
     let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
 
     assert_eq!(
         client
             .early_data()
             .unwrap()
-            .write((&[0xaa; 1024]).into(), &mut client_output)
+            .write((&[0xaa; 1024]).into(), &mut buf.client_output)
             .unwrap(),
         1024
     );
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     assert_eq!(
         server_read(&mut server, &mut server_input, &mut server_output),
         ([0xaa; 1024].to_vec(), Vec::new())
@@ -1321,11 +1072,11 @@ fn next_early_data_reports_excess_early_data() {
         client
             .early_data()
             .unwrap()
-            .write((&[0xbb; 1000]).into(), &mut client_output)
+            .write((&[0xbb; 1000]).into(), &mut buf.client_output)
             .unwrap(),
         1000
     );
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     let mut handler = server.read_tls(&mut server_input, &mut server_output);
     assert_eq!(
         handler
@@ -1424,20 +1175,9 @@ fn tls13_ticket_request_new_vs_resumed() {
     let server_config = Arc::new(server_config);
 
     // new connection: client requests 3 (above the default of 2, below the max of 5)
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
     let ops = shared_storage.ops_and_reset();
@@ -1448,20 +1188,9 @@ fn tls13_ticket_request_new_vs_resumed() {
     assert_eq!(ticket_inserts, 3);
 
     // resumed connection: server sends resumption_count (1)
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Resumed));
 
     let ops = shared_storage.ops_and_reset();
@@ -1490,20 +1219,9 @@ fn tls13_ticket_request_zero_means_no_tickets() {
     server_config.send_tls13_tickets = Tls13Tickets { default: 5, max: 5 };
     let server_config = Arc::new(server_config);
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
     let ops = shared_storage.ops_and_reset();
@@ -1532,20 +1250,9 @@ fn tls13_ticket_request_capped_by_server() {
     server_config.send_tls13_tickets = Tls13Tickets { default: 2, max: 3 };
     let server_config = Arc::new(server_config);
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
     let ops = shared_storage.ops_and_reset();
@@ -1571,20 +1278,9 @@ fn tls13_ticket_request_not_sent_when_none() {
     let server_config = Arc::new(server_config);
 
     // without the extension, server uses its default (4), not the max (8)
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
 
     let ops = shared_storage.ops_and_reset();
@@ -1619,20 +1315,9 @@ fn tls13_ticket_request_survives_hello_retry_request() {
         &provider,
     ));
 
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(
         client.handshake_kind(),
         Some(HandshakeKind::FullWithHelloRetryRequest)
@@ -1665,20 +1350,9 @@ fn tls13_client_discards_zero_lifetime_ticket() {
     let server_config = Arc::new(server_config);
 
     // full handshake: every ticket the server sends has a zero lifetime
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
     assert!(
         !shared_storage
@@ -1688,21 +1362,91 @@ fn tls13_client_discards_zero_lifetime_ticket() {
     );
 
     // nothing was stored, so the next connection cannot resume
-    let mut client_output = Vec::new();
-    let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-    let mut client_input = VecInput::default();
-    let mut server_input = VecInput::default();
-    do_handshake(
-        &mut client_input,
-        &mut client_output,
-        &mut client,
-        &mut server_input,
-        &mut server_output,
-        &mut server,
-    );
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
     assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
+}
+
+#[test]
+fn tls13_server_rejects_expired_stateful_session() {
+    let provider = provider::DEFAULT_TLS13_PROVIDER;
+    let client_config = Arc::new(make_client_config(KeyType::default(), &provider));
+
+    let clock = Arc::new(AdjustableClock::new());
+    let storage = Arc::new(ServerStorage::new());
+    let mut server_config = make_server_config(KeyType::default(), &provider);
+    server_config.session_storage = storage.clone();
+    server_config.time_provider = clock.clone();
+    let server_config = Arc::new(server_config);
+
+    // full handshake: the server stores the sessions and advertises a 24 hour lifetime
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
+    assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
+    assert_eq!(storage.puts(), 2);
+
+    // 25 hours later (by the server's clock) the stored session is found but not resumed
+    clock.advance(Duration::from_secs(25 * 60 * 60));
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
+    assert_eq!(storage.takes(), 1);
+    assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
+    assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
+}
+
+#[test]
+fn tls12_server_rejects_expired_stateful_session() {
+    let provider = provider::DEFAULT_TLS12_PROVIDER;
+    let client_config = Arc::new(make_client_config(KeyType::default(), &provider));
+
+    let clock = Arc::new(AdjustableClock::new());
+    let storage = Arc::new(ServerStorage::new());
+    let mut server_config = make_server_config(KeyType::default(), &provider);
+    server_config.session_storage = storage.clone();
+    server_config.time_provider = clock.clone();
+    let server_config = Arc::new(server_config);
+
+    // full handshake: the server stores the session under its session id
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
+    assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
+    assert_eq!(storage.puts(), 1);
+
+    // 25 hours later (by the server's clock) the stored session is found but not resumed
+    clock.advance(Duration::from_secs(25 * 60 * 60));
+    let (mut client, mut server, mut buf) =
+        make_pair_for_arc_configs(&client_config, &server_config);
+    buf.handshake(&mut client, &mut server);
+    assert_eq!(storage.gets(), 1);
+    assert_eq!(client.handshake_kind(), Some(HandshakeKind::Full));
+    assert_eq!(server.handshake_kind(), Some(HandshakeKind::Full));
+}
+
+/// A `TimeProvider` that starts at the current time and only moves when told to.
+#[derive(Debug)]
+struct AdjustableClock(AtomicU64);
+
+impl AdjustableClock {
+    fn new() -> Self {
+        Self(AtomicU64::new(UnixTime::now().as_secs()))
+    }
+
+    fn advance(&self, by: Duration) {
+        self.0
+            .fetch_add(by.as_secs(), Ordering::SeqCst);
+    }
+}
+
+impl TimeProvider for AdjustableClock {
+    fn current_time(&self) -> Option<UnixTime> {
+        Some(UnixTime::since_unix_epoch(Duration::from_secs(
+            self.0.load(Ordering::SeqCst),
+        )))
+    }
 }
 
 /// Issues tickets with a `ticket_lifetime` of zero.

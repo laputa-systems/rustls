@@ -26,8 +26,7 @@
 use std::env;
 use std::sync::Arc;
 
-use rustls::VecInput;
-use rustls_test::{MultiTest, do_handshake, make_pair_for_arc_configs, transfer};
+use rustls_test::{MultiTest, make_pair_for_arc_configs, transfer};
 use rustls_util::KeyLogFile;
 
 use super::{provider, serialized};
@@ -42,27 +41,16 @@ fn exercise_key_log_file_for_client() {
             client_config.key_log = Arc::new(KeyLogFile::new());
             let client_config = Arc::new(client_config);
 
-            let mut client_output = Vec::new();
-            let mut server_output = Vec::new();
-            let (mut client, mut server) =
-                make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-            let mut client_input = VecInput::default();
-            let mut server_input = VecInput::default();
+            let (mut client, mut server, mut buf) =
+                make_pair_for_arc_configs(&client_config, &server_config);
 
-            do_handshake(
-                &mut client_input,
-                &mut client_output,
-                &mut client,
-                &mut server_input,
-                &mut server_output,
-                &mut server,
-            );
+            buf.handshake(&mut client, &mut server);
             client
-                .write(b"hello".into(), &mut client_output)
+                .write(b"hello".into(), &mut buf.client_output)
                 .unwrap();
-            transfer(&mut client_output, &mut server_input);
+            transfer(&mut buf.client_output, &mut buf.server_input);
             server
-                .read_tls(&mut server_input, &mut server_output)
+                .read_tls(&mut buf.server_input, &mut buf.server_output)
                 .handle_all(&mut Vec::new())
                 .unwrap();
         }
@@ -79,27 +67,16 @@ fn exercise_key_log_file_for_server() {
             server_config.key_log = Arc::new(KeyLogFile::new());
             let server_config = Arc::new(server_config);
 
-            let mut client_output = Vec::new();
-            let mut server_output = Vec::new();
-            let (mut client, mut server) =
-                make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-            let mut client_input = VecInput::default();
-            let mut server_input = VecInput::default();
+            let (mut client, mut server, mut buf) =
+                make_pair_for_arc_configs(&client_config, &server_config);
 
-            do_handshake(
-                &mut client_input,
-                &mut client_output,
-                &mut client,
-                &mut server_input,
-                &mut server_output,
-                &mut server,
-            );
+            buf.handshake(&mut client, &mut server);
             client
-                .write(b"hello".into(), &mut client_output)
+                .write(b"hello".into(), &mut buf.client_output)
                 .unwrap();
-            transfer(&mut client_output, &mut server_input);
+            transfer(&mut buf.client_output, &mut buf.server_input);
             server
-                .read_tls(&mut server_input, &mut server_output)
+                .read_tls(&mut buf.server_input, &mut buf.server_output)
                 .handle_all(&mut Vec::new())
                 .unwrap();
         }

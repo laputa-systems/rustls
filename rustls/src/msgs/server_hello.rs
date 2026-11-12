@@ -362,7 +362,7 @@ impl<'a> Codec<'a> for EncryptedExtensions<'a> {
 /// Representation of the ECHEncryptedExtensions extension specified in
 /// [RFC 9849 Section 5].
 ///
-/// [RFC 9849 Section 5]: <https://datatracker.ietf.org/doc/html/rfc9849#section-5>
+/// [RFC 9849 Section 5]: <https://www.rfc-editor.org/info/rfc9849#section-5>
 #[derive(Clone, Debug)]
 pub(crate) struct ServerEncryptedClientHello {
     pub(crate) retry_configs: Vec<EchConfigPayload>,
@@ -480,7 +480,7 @@ impl Codec<'_> for EchConfigContents {
             public_name: {
                 DnsName::try_from(SizedPayload::<u8, MaybeEmpty>::read(r)?.bytes())
                     .map_err(|_| InvalidMessage::InvalidServerName)?
-                    .to_owned()
+                    .into_owned()
             },
             extensions: Vec::read(r)?,
         })

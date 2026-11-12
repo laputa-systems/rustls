@@ -229,7 +229,7 @@ impl ExpectServerHello {
         // > A client which receives a TLS 1.3 Server Hello with a
         // > legacy_version value not equal to 0x0303 MUST abort the handshake
         // > with a "protocol_version" alert.
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.2.3>
+        // <https://www.rfc-editor.org/info/rfc9846#section-4.2.3>
         let server_version = if server_hello.legacy_version == ProtocolVersion::TLSv1_2 {
             server_hello
                 .selected_version
@@ -301,11 +301,12 @@ impl ExpectServerHelloOrHelloRetryRequest {
         // We always send a key share when TLS 1.3 is enabled.
         let offered_key_share = self.next.offered_key_share.unwrap();
 
-        // A retry request is illegal if it contains no cookie and asks for
-        // retry of a group we already sent.
+        // A retry request is illegal if it asks for retry of a group we
+        // already sent a share for, whether or not it also carries a cookie.
+        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.3.8>
         let config = &self.next.input.config;
 
-        if let (None, Some(req_group)) = (&hrr.cookie, hrr.key_share) {
+        if let Some(req_group) = hrr.key_share {
             let offered_hybrid = offered_key_share
                 .share
                 .as_hybrid_checked(&config.provider().kx_groups, ProtocolVersion::TLSv1_3)
@@ -333,14 +334,14 @@ impl ExpectServerHelloOrHelloRetryRequest {
         // > the HelloRetryRequest has the same format as a ServerHello message,
         // > and the legacy_version, legacy_session_id_echo, cipher_suite, and
         // > legacy_compression_method fields have the same meaning
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.2.4>
+        // <https://www.rfc-editor.org/info/rfc9846#section-4.2.4>
         //
         // and
         //
         // > A client which receives a legacy_session_id_echo field that does not
         // > match what it sent in the ClientHello MUST abort the handshake with an
         // > "illegal_parameter" alert.
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.2.3>
+        // <https://www.rfc-editor.org/info/rfc9846#section-4.2.3>
         if hrr.session_id != self.next.input.session_id {
             return Err(PeerMisbehaved::IllegalHelloRetryRequestWithWrongSessionId.into());
         }
@@ -348,7 +349,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
         // Or carries a `legacy_version` other than TLS1.2, which (given the
         // shared meaning above) requires the same "protocol_version" abort as
         // for a ServerHello.
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.2.3>
+        // <https://www.rfc-editor.org/info/rfc9846#section-4.2.3>
         if hrr.legacy_version != ProtocolVersion::TLSv1_2 {
             return Err(PeerMisbehaved::IllegalHelloRetryRequestWithWrongLegacyVersion.into());
         }
@@ -515,8 +516,8 @@ impl ClientHelloInput {
             }
         };
 
-        // https://tools.ietf.org/html/rfc9846#appendix-E.4
-        // https://tools.ietf.org/html/rfc9001#section-8.4
+        // https://www.rfc-editor.org/info/rfc9846#appendix-E.4
+        // https://www.rfc-editor.org/info/rfc9001#section-8.4
         let session_id = match session_id {
             Some(session_id) => session_id,
             None if output.quic().is_some() => SessionId::empty(),
@@ -690,12 +691,12 @@ fn emit_client_hello_for_retry(
         // as the SNI domain name. This happens unconditionally so we ignore the
         // `enable_sni` value. That will be used later to decide what to do for
         // the protected inner hello's SNI.
-        (Some(ech_state), _) => Some(ServerNamePayload::from(&ech_state.outer_name)),
+        (Some(ech_state), _) => Some(ServerNamePayload::from(ech_state.outer_name.clone())),
 
         // If we have no ECH state, and SNI is enabled, try to use the input server_name
         // for the SNI domain name.
         (None, true) => match &input.session_key.server_name {
-            ServerName::DnsName(dns_name) => Some(ServerNamePayload::from(dns_name)),
+            ServerName::DnsName(dns_name) => Some(ServerNamePayload::from(dns_name.clone())),
             _ => None,
         },
 
@@ -918,7 +919,7 @@ fn emit_client_hello_for_retry(
 
     let ch = Message {
         version: match retryreq {
-            // <https://datatracker.ietf.org/doc/html/rfc9846#section-5.1>:
+            // <https://www.rfc-editor.org/info/rfc9846#section-5.1>:
             // "This value MUST be set to 0x0303 for all records generated
             //  by a TLS 1.3 implementation ..."
             Some(_) => EncodableVersion::Legacy(ProtocolVersion::TLSv1_2),
@@ -1132,6 +1133,9 @@ impl ClientSessionValue {
             .take_tls13_ticket(key)
             .map(ClientSessionValue::Tls13)
             .or_else(|| {
+                if config.resumption.tls12_resumption == Tls12Resumption::Disabled {
+                    return None;
+                }
                 config
                     .resumption
                     .store

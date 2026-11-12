@@ -272,7 +272,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "nix",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-ring",
  "rustls-webpki 0.104.0-alpha.8",
@@ -498,9 +498,9 @@ dependencies = [
 
 [[package]]
 name = "crabgrind"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3f4bc9b199b6cfdf87ef7960ac7be99306a1ad4d6c442b1c3701cddb22ea47d"
+checksum = "0e4dbe352d7240a1ef7b2f5d7d283cefa9405835974f7aabc59838b9d1a6acc6"
 dependencies = [
  "bindgen",
  "cc",
@@ -756,25 +756,13 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
-dependencies = [
- "cfg-if",
- "libc",
- "r-efi 5.3.0",
- "wasip2",
-]
-
-[[package]]
-name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
  "libc",
- "r-efi 6.0.0",
+ "r-efi",
  "rand_core",
 ]
 
@@ -786,12 +774,12 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "graviola"
-version = "0.4.1"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8596c4fa98466aae2fcf4c72a665bc0e021c0aaab1e47d82044d3dc3e309a76"
+checksum = "bc0377ccc5ef095424121430046e475cf06658e23475b1af526655cfad0b86b2"
 dependencies = [
  "cfg-if",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
 ]
 
 [[package]]
@@ -1582,12 +1570,6 @@ dependencies = [
 
 [[package]]
 name = "r-efi"
-version = "5.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
-
-[[package]]
-name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
@@ -1742,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.24.0-dev.2"
+version = "0.24.0-dev.3"
 dependencies = [
  "bencher",
  "brotli",
@@ -1762,14 +1744,14 @@ dependencies = [
 
 [[package]]
 name = "rustls-aws-lc-rs"
-version = "0.24.0-dev.2"
+version = "0.24.0-dev.3"
 dependencies = [
  "aws-lc-rs",
  "bencher",
  "criterion",
  "hex",
  "rcgen",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-pki-types",
  "rustls-test",
  "serde",
@@ -1785,7 +1767,7 @@ name = "rustls-bench"
 version = "0.1.0"
 dependencies = [
  "clap",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-graviola",
  "rustls-ring",
@@ -1805,7 +1787,7 @@ dependencies = [
  "itertools 0.15.0",
  "rayon",
  "rustc-hash",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-fuzzing-provider",
  "rustls-ring",
@@ -1818,7 +1800,7 @@ version = "0.0.1"
 dependencies = [
  "regex",
  "ring",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "tokio",
 ]
 
@@ -1830,7 +1812,7 @@ dependencies = [
  "hickory-resolver",
  "mio",
  "rcgen",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-util",
  "serde",
@@ -1844,7 +1826,7 @@ dependencies = [
 name = "rustls-fuzzing-provider"
 version = "0.1.0"
 dependencies = [
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "tracing-subscriber",
 ]
 
@@ -1866,16 +1848,16 @@ dependencies = [
  "base64",
  "num-bigint 0.5.1",
  "openssl",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-util",
 ]
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.1"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
+checksum = "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb"
 dependencies = [
  "zeroize",
 ]
@@ -1884,7 +1866,7 @@ dependencies = [
 name = "rustls-post-quantum"
 version = "0.3.0-dev.2"
 dependencies = [
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
 ]
 
@@ -1893,7 +1875,7 @@ name = "rustls-provider-test"
 version = "0.1.0"
 dependencies = [
  "hex",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "serde",
  "serde_json",
@@ -1901,11 +1883,11 @@ dependencies = [
 
 [[package]]
 name = "rustls-ring"
-version = "0.24.0-dev.2"
+version = "0.24.0-dev.3"
 dependencies = [
  "bencher",
  "ring",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-pki-types",
  "rustls-test",
  "subtle",
@@ -1918,7 +1900,7 @@ version = "0.1.0"
 dependencies = [
  "macro_rules_attribute",
  "num-bigint 0.5.1",
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "rustls-aws-lc-rs",
  "rustls-pki-types",
  "rustls-ring",
@@ -1931,9 +1913,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-util"
-version = "0.24.0-dev.2"
+version = "0.24.0-dev.3"
 dependencies = [
- "rustls 0.24.0-dev.2",
+ "rustls 0.24.0-dev.3",
  "tracing",
 ]
 
@@ -2437,15 +2419,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
-name = "wasip2"
-version = "1.0.4+wasi-0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
-dependencies = [
- "wit-bindgen",
-]
-
-[[package]]
 name = "wasm-bindgen"
 version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2662,12 +2635,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "wit-bindgen"
-version = "0.57.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "writeable"

@@ -7,7 +7,6 @@ use super::hs::{ClientHelloInput, ClientState};
 use crate::client::EchStatus;
 use crate::common_state::{CommonState, EarlyDataEvent, Event, Side};
 use crate::conn::private::SideOutput;
-use crate::conn::split::SplitConnection;
 use crate::conn::{
     ClientNext, Connection, DataKind, NeedsInput, Processed, SideCommonOutput, SideData, Tcp,
     Transport, VerifyPeerIdentity,
@@ -199,9 +198,7 @@ pub enum ClientHandshake {
     VerifyServerIdentity(VerifyPeerIdentity<ClientSide, Tcp>),
 
     /// The handshake is complete.
-    ///
-    /// Now see [`SplitConnection`] to continue the connection.
-    Complete(SplitConnection<ClientSide>),
+    Complete(Connection<ClientSide, Tcp>),
 }
 
 impl TryFrom<Processed<ClientSide, Tcp>> for ClientHandshake {
@@ -221,7 +218,7 @@ impl TryFrom<Connection<ClientSide, Tcp>> for ClientHandshake {
 
             ClientNext::VerifyServerIdentity(verify) => Self::VerifyServerIdentity(verify),
 
-            ClientNext::Complete(conn) => Self::Complete(SplitConnection::try_from(conn)?),
+            ClientNext::Complete(conn) => Self::Complete(conn),
         })
     }
 }
@@ -348,7 +345,7 @@ pub struct ClientSide {
 }
 
 impl ClientSide {
-    /// Returns True if the server signalled it will process early data.
+    /// Returns true if the server signalled it will process early data.
     ///
     /// If you sent early data and this returns false at the end of the
     /// handshake then the server will not process the data.  This

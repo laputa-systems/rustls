@@ -83,8 +83,6 @@ pub static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = match WebPkiSupported
 };
 
 /// An array of all the verification algorithms exported by this crate.
-///
-/// This will be empty if the crate is built without the `ring` and `aws-lc-rs` features.
 pub static ALL_VERIFICATION_ALGS: &[&dyn SignatureVerificationAlgorithm] = &[
     ECDSA_P256_SHA256,
     ECDSA_P256_SHA384,
@@ -149,7 +147,7 @@ impl SignatureVerificationAlgorithm for AwsLcRsVerificationAlgorithm {
             //  by 0x04 and the compressed form is indicated by either 0x02 or
             //  0x03 (see 2.3.3 in [SEC1]).  The public key MUST be rejected if
             //  any other value is included in the first octet."
-            // -- <https://datatracker.ietf.org/doc/html/rfc5480#section-2.2>
+            // -- <https://www.rfc-editor.org/info/rfc5480#section-2.2>
             match public_key.first() {
                 Some(0x04) | Some(0x02) | Some(0x03) => {}
                 _ => return Err(InvalidSignature),
@@ -344,7 +342,7 @@ pub static RSA_PKCS1_3072_8192_SHA384: &dyn SignatureVerificationAlgorithm =
 /// RSA PSS signatures using SHA-256 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA256_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &AwsLcRsVerificationAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,
@@ -355,7 +353,7 @@ pub static RSA_PSS_2048_8192_SHA256_LEGACY_KEY: &dyn SignatureVerificationAlgori
 /// RSA PSS signatures using SHA-384 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA384_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &AwsLcRsVerificationAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,
@@ -366,7 +364,7 @@ pub static RSA_PSS_2048_8192_SHA384_LEGACY_KEY: &dyn SignatureVerificationAlgori
 /// RSA PSS signatures using SHA-512 for keys of 2048-8192 bits and of
 /// type rsaEncryption; see [RFC 4055 Section 1.2].
 ///
-/// [RFC 4055 Section 1.2]: https://tools.ietf.org/html/rfc4055#section-1.2
+/// [RFC 4055 Section 1.2]: https://www.rfc-editor.org/info/rfc4055#section-1.2
 pub static RSA_PSS_2048_8192_SHA512_LEGACY_KEY: &dyn SignatureVerificationAlgorithm =
     &AwsLcRsVerificationAlgorithm {
         public_key_alg_id: alg_id::RSA_ENCRYPTION,

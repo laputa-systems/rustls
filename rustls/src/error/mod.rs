@@ -4,6 +4,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
+#[cfg(feature = "std")]
 use std::time::SystemTimeError;
 
 use pki_types::{AlgorithmIdentifier, EchConfigListBytes, ServerName, UnixTime};
@@ -320,6 +321,7 @@ impl From<InconsistentKeys> for Error {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<SystemTimeError> for Error {
     #[inline]
     fn from(_: SystemTimeError) -> Self {
@@ -597,10 +599,8 @@ impl From<&CertificateError> for AlertDescription {
     fn from(e: &CertificateError) -> Self {
         use CertificateError::*;
         match e {
-            BadEncoding
-            | UnhandledCriticalExtension
-            | NotValidForName
-            | NotValidForNameContext { .. } => Self::BadCertificate,
+            BadEncoding | UnhandledCriticalExtension | NotValidForName => Self::BadCertificate,
+            NotValidForNameContext { .. } => Self::BadCertificate,
             // RFC 5246/RFC 9846
             // certificate_expired
             //  A certificate has expired or **is not currently valid**.
@@ -635,6 +635,7 @@ impl From<&CertificateError> for AlertDescription {
 impl fmt::Display for CertificateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "std")]
             Self::NotValidForNameContext {
                 expected,
                 presented,
@@ -710,8 +711,11 @@ impl fmt::Display for CertificateError {
             } => {
                 write!(
                     f,
-                    "certificate does not allow extended key usage for {required}, allows "
+                    "certificate does not allow extended key usage for {required}; it allows "
                 )?;
+                if presented.is_empty() {
+                    write!(f, "nothing")?;
+                }
                 for (i, eku) in presented.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -904,46 +908,46 @@ enum_builder! {
 
         /// The server is unable to obtain certificate sent as an URL by the client.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc6066>
+        /// <https://www.rfc-editor.org/info/rfc6066>
         CertificateUnobtainable => 0x6f,
 
         /// The server does not recognize SNI sent by the client.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc6066>
+        /// <https://www.rfc-editor.org/info/rfc6066>
         UnrecognizedName => 0x70,
 
-        /// <https://datatracker.ietf.org/doc/html/rfc6066>
+        /// <https://www.rfc-editor.org/info/rfc6066>
         BadCertificateStatusResponse => 0x71,
 
         /// Reserved. Used in TLS versions prior to 1.3.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc6066>
+        /// <https://www.rfc-editor.org/info/rfc6066>
         BadCertificateHashValue => 0x72,
 
         /// The server does not recognize PSK identity.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc4279>
+        /// <https://www.rfc-editor.org/info/rfc4279>
         UnknownPskIdentity => 0x73,
 
         /// A client certificate is desired but none was provided by the client.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc9846#section-6.2-4.48.1>
+        /// <https://www.rfc-editor.org/info/rfc9846#section-6.2-4.48.1>
         CertificateRequired => 0x74,
 
         /// An error condition in cases when either no more specific error is available
         /// or the sender wishes to conceal the specific error code.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc9846#section-6.2-4.49>
+        /// <https://www.rfc-editor.org/info/rfc9846#section-6.2-4.49>
         GeneralError => 0x75,
 
         /// A client ALPN extension advertises only protocols that the server does not support.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc9846#section-6.2-4.52.1>
+        /// <https://www.rfc-editor.org/info/rfc9846#section-6.2-4.52.1>
         NoApplicationProtocol => 0x78,
 
         /// Use of Encrypted Client Hello is required.
         ///
-        /// <https://datatracker.ietf.org/doc/html/rfc9849#section-11.2>
+        /// <https://www.rfc-editor.org/info/rfc9849#section-11.2>
         EncryptedClientHelloRequired => 0x79,
     }
 }
@@ -1075,7 +1079,7 @@ impl fmt::Display for AlertDescription {
             ),
 
             // ECH requirement by clients, see
-            // <https://datatracker.ietf.org/doc/html/rfc9849#name-update-of-the-tls-alert-reg>
+            // <https://www.rfc-editor.org/info/rfc9849#name-update-of-the-tls-alert-reg>
             AlertDescriptionName::EncryptedClientHelloRequired => {
                 write!(f, "required use of encrypted client hello")
             }
@@ -1187,6 +1191,7 @@ pub enum PeerMisbehaved {
     DuplicateNewSessionTicketExtensions,
     DuplicateServerHelloExtensions,
     DuplicateServerNameTypes,
+    EarlyDataAcceptedWithVariedApplicationProtocol,
     EarlyDataAttemptedInSecondClientHello,
     EarlyDataExtensionWithoutResumption,
     EarlyDataOfferedWithVariedCipherSuite,
@@ -1223,6 +1228,7 @@ pub enum PeerMisbehaved {
     MissingQuicTransportParameters,
     NoCertificatesPresented,
     NonEmptyRenegotiationInfo,
+    NonEmptySessionIdInQuic,
     OfferedDuplicateCertificateCompressions,
     OfferedDuplicateKeyShares,
     OfferedEarlyDataWithOldProtocolVersion,
@@ -1239,6 +1245,7 @@ pub enum PeerMisbehaved {
     SelectedDifferentCipherSuiteAfterRetry,
     SelectedDifferentProtocolVersionAfterRetry,
     SelectedInvalidPsk,
+    SelectedPskWithRejectedEch,
     SelectedTls12UsingTls13VersionExtension,
     SelectedTls13UsingLegacyVersionField,
     SelectedUnofferedApplicationProtocol,
@@ -1402,7 +1409,7 @@ impl fmt::Display for ExtendedKeyPurpose {
             Self::Other(values) => {
                 for (i, value) in values.iter().enumerate() {
                     if i > 0 {
-                        write!(f, ", ")?;
+                        write!(f, ".")?;
                     }
                     write!(f, "{value}")?;
                 }
@@ -1468,7 +1475,7 @@ pub enum CertRevocationListError {
     /// The CRL contained a revoked certificate with an unsupported revocation reason.
     /// See RFC 5280 Section 5.3.1[^1] for a list of supported revocation reasons.
     ///
-    /// [^1]: <https://www.rfc-editor.org/rfc/rfc5280#section-5.3.1>
+    /// [^1]: <https://www.rfc-editor.org/info/rfc5280#section-5.3.1>
     UnsupportedRevocationReason,
 }
 
@@ -1595,6 +1602,13 @@ pub enum ApiMisuse {
     ///
     /// [`KeyingMaterialExporter::derive()`]: crate::KeyingMaterialExporter::derive()
     ExporterContextTooLong,
+
+    /// The `label` parameter to [`KeyingMaterialExporter::derive()`][] was too long.
+    ///
+    /// For TLS1.3 connections (only) this parameter is limited to 249 bytes.
+    ///
+    /// [`KeyingMaterialExporter::derive()`]: crate::KeyingMaterialExporter::derive()
+    ExporterLabelTooLong,
 
     /// The `output` object for [`KeyingMaterialExporter::derive()`][] was too long.
     ///

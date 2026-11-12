@@ -35,7 +35,7 @@ impl CommonState {
         }
     }
 
-    /// Writes a `close_notify` warning alert to into the `tls` buffer.
+    /// Writes a `close_notify` warning alert into the `tls` buffer.
     ///
     /// This informs the peer that the connection is being closed. Does nothing if any
     /// `close_notify` or fatal alert was already sent.
@@ -44,12 +44,6 @@ impl CommonState {
     }
 
     /// Returns true if the connection is currently performing the TLS handshake.
-    ///
-    /// During this time plaintext written to the connection is buffered in memory. After
-    /// [`Connection::read_tls()`] has been called, this might start to return `false`
-    /// while the final handshake packets still need to be extracted from the connection's buffers.
-    ///
-    /// [`Connection::read_tls()`]: crate::Connection::read_tls
     pub fn is_handshaking(&self) -> bool {
         !(self.send.may_send_application_data && self.recv.may_receive_application_data)
     }
@@ -139,7 +133,8 @@ impl ConnectionOutputs {
     /// This function may return `None` depending on the state of the connection,
     /// the type of handshake, and the protocol version.
     ///
-    /// If [`CommonState::is_handshaking()`] is true this function will return `None`.
+    /// This function will return `None` if called prior to the key exchange group being determined.
+    ///
     /// Similarly, if the [`ConnectionOutputs::handshake_kind()`] is [`HandshakeKind::Resumed`]
     /// and the [`ConnectionOutputs::protocol_version()`] is TLS 1.2, then no key exchange will have
     /// occurred and this function will return `None`.

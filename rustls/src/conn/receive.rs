@@ -3,10 +3,12 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ops::Range;
 use core::{fmt, mem};
+#[cfg(feature = "std")]
 use std::io::{self, Read};
 
 use super::private::SideOutput;
 use super::send::{SendOutput, SendPath};
+#[cfg(feature = "std")]
 use super::split::SendAdapter;
 use super::{Connection, SEQ_SOFT_LIMIT, SideData, StateMachine, Transport};
 use crate::common_state::{
@@ -17,7 +19,7 @@ use crate::enums::{ContentType, HandshakeType, ProtocolVersion};
 use crate::error::{AlertDescription, Error, PeerMisbehaved};
 use crate::msgs::{
     AlertLevel, AlertLevelName, AlertMessagePayload, Deframed, Deframer, Delocator,
-    HandshakeAlignedProof, Locator, Message, MessagePayload,
+    HandshakeAlignedProof, Locator, MAX_FRAGMENT_LEN, Message, MessagePayload,
 };
 use crate::quic::QuicOutput;
 use crate::tracing::{trace, warn};
@@ -54,6 +56,7 @@ impl<'a, 'm, Side: SideData> MessageIter<'a, 'm, Side, SendPath> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<'a, 'm, 's, Side: SideData> MessageIter<'a, 'm, Side, SendAdapter<'s>> {
     pub(super) fn receive(
         input: &'m mut dyn TlsInputBuffer,
@@ -129,7 +132,7 @@ impl<'a, 'm, Side: SideData, Send: SendOutput + 'a> MessageIter<'a, 'm, Side, Se
             } else if record.payload.is_empty()
                 && matches!(record.typ, ContentType::Handshake | ContentType::Alert)
             {
-                // <https://datatracker.ietf.org/doc/html/rfc9846#section-5.4>
+                // <https://www.rfc-editor.org/info/rfc9846#section-5.4>
                 let _ = output.other.send.send_alert(
                     AlertLevel::Fatal,
                     AlertDescription::UnexpectedMessage,
@@ -174,7 +177,7 @@ impl<'a, 'm, Side: SideData, Send: SendOutput + 'a> MessageIter<'a, 'm, Side, Se
 
             if self.recv.has_received_close_notify {
                 // "Any data received after a closure alert has been received MUST be ignored."
-                // -- <https://datatracker.ietf.org/doc/html/rfc9846#section-6.1>
+                // -- <https://www.rfc-editor.org/info/rfc9846#section-6.1>
 
                 // First, discard actually-processed bytes.
                 self.input
@@ -290,7 +293,7 @@ impl ReceivePath {
                 // "Handshake messages MUST NOT be interleaved with other record
                 // types.  That is, if a handshake message is split over two or more
                 // records, there MUST NOT be any other records between them."
-                // https://www.rfc-editor.org/rfc/rfc9846#section-5.1
+                // https://www.rfc-editor.org/info/rfc9846#section-5.1
                 return Err(PeerMisbehaved::MessageInterleavedWithHandshakeMessage.into());
             }
 
@@ -563,6 +566,14 @@ impl DecryptionState {
         encr: Record<InboundOpaque<'a>>,
     ) -> Result<Option<Decrypted<'a>>, Error> {
         let Some(decrypter) = &mut self.record_decrypter else {
+            // Plaintext is limited to 2^14 bytes (RFC 9846 section 5.1). Unprotected
+            // application_data here is rejected early data skipped after an HRR (ciphertext).
+            if encr.typ != ContentType::ApplicationData
+                && encr.payload.len() > MAX_FRAGMENT_LEN.get()
+            {
+                return Err(Error::PeerSentOversizedRecord);
+            }
+
             return Ok(Some(Decrypted {
                 want_close_before_decrypt: false,
                 plaintext: encr.into_plain_record(),
@@ -581,6 +592,9 @@ impl DecryptionState {
 
         let encrypted_len = encr.payload.len();
         match decrypter.decrypt(encr, self.read_seq) {
+            Ok(plaintext) if plaintext.payload.len() > MAX_FRAGMENT_LEN.get() => {
+                Err(Error::PeerSentOversizedRecord)
+            }
             Ok(plaintext) => {
                 self.read_seq += 1;
                 if !self.has_decrypted {
@@ -757,16 +771,6 @@ pub(super) struct JoinOutput<'a, Send: SendOutput + 'a> {
     pub(super) quic: Option<&'a mut dyn QuicOutput>,
     pub(super) send: &'a mut Send,
     pub(super) side: &'a mut dyn SideOutput,
-}
-
-pub(super) struct Discard;
-
-impl ConnectionOutput for Discard {
-    fn handle(&mut self, _ev: OutputEvent<'_>) {}
-}
-
-impl SideOutput for Discard {
-    fn emit(&mut self, _ev: Event) {}
 }
 
 /// Tracking technically-allowed protocol actions
@@ -955,6 +959,7 @@ impl VecInput {
     /// Once the buffer contains 64 kB of data, we will not read any more bytes until some
     /// are consumed by reading from the buffer via
     /// [`Connection::read_tls()`][super::Connection::read_tls()].
+    #[cfg(feature = "std")]
     pub fn read(&mut self, rd: &mut dyn Read) -> io::Result<usize> {
         if self.received_close_notify {
             return Ok(0);
@@ -976,6 +981,7 @@ impl VecInput {
     }
 
     /// Resize the internal `buf` if necessary for reading more bytes.
+    #[cfg(feature = "std")]
     fn prepare_read(&mut self) -> Result<(), &'static str> {
         /// TLS allows for handshake messages of up to 16MB.  We
         /// restrict that to 64KB to limit potential for denial-of-

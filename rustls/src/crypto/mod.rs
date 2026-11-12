@@ -46,11 +46,8 @@ pub mod tls13;
 /// Hybrid public key encryption (RFC 9180).
 pub mod hpke;
 
-#[cfg(any(doc, test))]
+#[cfg(test)]
 pub(crate) mod test_provider;
-#[cfg(doc)]
-#[doc(hidden)]
-pub use test_provider::TEST_PROVIDER;
 #[cfg(test)]
 pub(crate) use test_provider::{TEST_PROVIDER, TLS13_TEST_SUITE};
 
@@ -64,9 +61,6 @@ pub use signer::{
 pub use crate::suites::CipherSuiteCommon;
 
 /// Controls core cryptography used by rustls.
-///
-/// This structure provides defaults. Everything in it can be overridden at
-/// runtime by replacing field values as needed.
 ///
 /// # Using a specific `CryptoProvider`
 ///
@@ -345,7 +339,7 @@ pub struct WebPkiSupportedAlgorithms {
     /// - The list of verification algorithms for each mapping must be non-empty.
     ///
     /// This is one (`SignatureScheme`) to many ([`SignatureVerificationAlgorithm`]) because
-    /// (depending on the protocol version) there is not necessary a 1-to-1 mapping.
+    /// (depending on the protocol version) there is not necessarily a 1-to-1 mapping.
     ///
     /// For TLS1.2, all `SignatureVerificationAlgorithm`s are tried in sequence.
     ///
@@ -362,8 +356,7 @@ pub struct WebPkiSupportedAlgorithms {
 impl WebPkiSupportedAlgorithms {
     /// Creating a `WebPkiSupportedAlgorithms` and checking its consistency.
     ///
-    /// This is intended to only be called in const context, so the panics are
-    /// compile-time.
+    /// This is intended to only be called in const context.
     pub const fn new(
         all: &'static [&'static dyn SignatureVerificationAlgorithm],
         mapping: &'static [(
@@ -382,7 +375,6 @@ impl WebPkiSupportedAlgorithms {
             if s.mapping[i].1.is_empty() {
                 return Err(ApiMisuse::NoSignatureVerificationAlgorithms);
             }
-            assert!(!s.mapping[i].1.is_empty());
             i += 1;
         }
 
@@ -570,20 +562,21 @@ pub trait TicketerFactory: Debug + Send + Sync {
 
 /// A trait for the ability to encrypt and decrypt tickets.
 pub trait TicketProducer: Debug + Send + Sync {
-    /// Encrypt and authenticate `plain`, returning the resulting
-    /// ticket.  Return None if `plain` cannot be encrypted for
-    /// some reason: an empty ticket will be sent and the connection
-    /// will continue.
+    /// Encrypt and authenticate `plain`, returning the resulting ticket.
+    ///
+    /// Return None if `plain` cannot be encrypted for some reason: an empty
+    /// ticket (in TLS1.2), or no ticket (in TLS1.3), will be sent and the
+    /// connection will continue.
     fn encrypt(&self, plain: &[u8]) -> Option<Vec<u8>>;
 
-    /// Decrypt `cipher`, validating its authenticity protection
-    /// and recovering the plaintext.  `cipher` is fully attacker
-    /// controlled, so this decryption must be side-channel free,
-    /// panic-proof, and otherwise bullet-proof.  If the decryption
-    /// fails, return None.
+    /// Decrypt `cipher`, validating its authenticity protection and recovering the plaintext.
+    ///
+    /// `cipher` is fully attacker controlled, so this decryption must be side-channel free,
+    /// panic free, and otherwise bullet-proof.  If the decryption fails, return None.
     fn decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>>;
 
     /// Returns the lifetime of tickets produced now.
+    ///
     /// The lifetime is provided as a hint to clients that the
     /// ticket will not be useful after the given time.
     ///
@@ -636,5 +629,66 @@ pub(crate) fn tls12_only(provider: CryptoProvider) -> CryptoProvider {
     CryptoProvider {
         tls13_cipher_suites: Cow::default(),
         ..provider
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{format, vec};
+
+    use super::*;
+
+    #[test]
+    fn webpkisupportedalgorithms_construction() {
+        assert_eq!(
+            WebPkiSupportedAlgorithms::new(&[], &[]).err(),
+            Some(ApiMisuse::NoSignatureVerificationAlgorithms)
+        );
+        assert_eq!(
+            WebPkiSupportedAlgorithms::new(
+                &[&DummySigVer],
+                &[(SignatureScheme::ECDSA_NISTP256_SHA256, &[])]
+            )
+            .err(),
+            Some(ApiMisuse::NoSignatureVerificationAlgorithms)
+        );
+
+        let v = WebPkiSupportedAlgorithms::new(
+            &[&DummySigVer],
+            &[(SignatureScheme::ECDSA_NISTP256_SHA256, &[&DummySigVer])],
+        )
+        .unwrap();
+        assert_eq!(
+            format!("{v:?}"),
+            "WebPkiSupportedAlgorithms { all: [ .. ], mapping: [ECDSA_NISTP256_SHA256] }"
+        );
+        assert_eq!(
+            v.supported_schemes(),
+            vec![SignatureScheme::ECDSA_NISTP256_SHA256]
+        );
+        assert_eq!(v.mapping().len(), 1);
+    }
+
+    #[derive(Debug)]
+    struct DummySigVer;
+
+    impl SignatureVerificationAlgorithm for DummySigVer {
+        #[cfg_attr(coverage_nightly, coverage(off))]
+        fn verify_signature(
+            &self,
+            _public_key: &[u8],
+            _message: &[u8],
+            _signature: &[u8],
+        ) -> Result<(), pki_types::InvalidSignature> {
+            todo!()
+        }
+        #[cfg_attr(coverage_nightly, coverage(off))]
+        fn public_key_alg_id(&self) -> pki_types::AlgorithmIdentifier {
+            todo!()
+        }
+        #[cfg_attr(coverage_nightly, coverage(off))]
+        fn signature_alg_id(&self) -> pki_types::AlgorithmIdentifier {
+            todo!()
+        }
     }
 }

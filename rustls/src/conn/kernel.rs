@@ -47,7 +47,11 @@ use crate::{ConnectionOutputs, ConnectionTrafficSecrets, Error, SupportedCipherS
 /// minimal interfaces you need to implement a well-behaved TLS connection on
 /// top of kTLS.
 ///
+/// Get one of these by calling [`SplitConnection::dangerous_into_kernel_connection()`].
+///
 /// See the [`crate::kernel`] module docs for more details.
+///
+/// [`SplitConnection::dangerous_into_kernel_connection()`]: crate::split::SplitConnection
 pub struct KernelConnection<Side> {
     state: Box<dyn KernelState>,
     tls13_key_schedule: Option<Box<KeyScheduleTrafficSend>>,
@@ -191,7 +195,7 @@ impl KernelConnection<ClientSide> {
     ///   extra unparsed trailing data.
     /// - An error occurs while the connection updates the session ticket store.
     ///
-    /// [0]: https://datatracker.ietf.org/doc/html/rfc9846#section-4
+    /// [0]: https://www.rfc-editor.org/info/rfc9846#section-4
     pub fn handle_new_session_ticket(&mut self, payload: &[u8]) -> Result<(), Error> {
         // We want to return a more specific error here first if this is called
         // on a non-TLS 1.3 connection since a parsing error isn't the real issue

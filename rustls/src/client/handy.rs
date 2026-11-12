@@ -32,6 +32,7 @@ impl ClientSessionStore for NoClientSessionStorage {
     }
 }
 
+#[cfg(feature = "std")]
 mod cache {
     use alloc::collections::VecDeque;
     use core::fmt;
@@ -162,6 +163,7 @@ mod cache {
     }
 }
 
+#[cfg(feature = "std")]
 pub use cache::ClientSessionMemoryCache;
 
 #[derive(Debug)]
@@ -299,6 +301,7 @@ mod tests {
                     intermediates: Vec::new(),
                 })),
                 quic_params: None,
+                alpn: None,
             },
             &[],
             now,

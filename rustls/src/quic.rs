@@ -12,7 +12,7 @@ use crate::conn::{
     Transport, VerifyPeerIdentity, sealed,
 };
 use crate::crypto::cipher::{AeadKey, Iv, Payload};
-use crate::crypto::tls13::{Hkdf, HkdfExpander, OkmBlock};
+use crate::crypto::tls13::{Hkdf, HkdfExpander, Label, OkmBlock};
 use crate::error::{ApiMisuse, Error};
 use crate::msgs::{Message, MessagePayload, ServerExtensionsInput, TransportParameters};
 use crate::server::{ServerConfig, ServerSide};
@@ -612,9 +612,9 @@ pub trait HeaderProtectionKey: Send + Sync {
     ///
     /// Otherwise, `first` and `packet_number` will have the header protection added.
     ///
-    /// [Header Protection Application]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.1
-    /// [Header Protection Sample]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.2
-    /// [Packet Number Encoding and Decoding]: https://datatracker.ietf.org/doc/html/rfc9000#section-17.1
+    /// [Header Protection Application]: https://www.rfc-editor.org/info/rfc9001#section-5.4.1
+    /// [Header Protection Sample]: https://www.rfc-editor.org/info/rfc9001#section-5.4.2
+    /// [Packet Number Encoding and Decoding]: https://www.rfc-editor.org/info/rfc9000#section-17.1
     fn encrypt_in_place(
         &self,
         sample: &[u8],
@@ -640,9 +640,9 @@ pub trait HeaderProtectionKey: Send + Sync {
     ///
     /// Otherwise, `first` and `packet_number` will have the header protection removed.
     ///
-    /// [Header Protection Application]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.1
-    /// [Header Protection Sample]: https://datatracker.ietf.org/doc/html/rfc9001#section-5.4.2
-    /// [Packet Number Encoding and Decoding]: https://datatracker.ietf.org/doc/html/rfc9000#section-17.1
+    /// [Header Protection Application]: https://www.rfc-editor.org/info/rfc9001#section-5.4.1
+    /// [Header Protection Sample]: https://www.rfc-editor.org/info/rfc9001#section-5.4.2
+    /// [Packet Number Encoding and Decoding]: https://www.rfc-editor.org/info/rfc9000#section-17.1
     fn decrypt_in_place(
         &self,
         sample: &[u8],
@@ -849,8 +849,8 @@ impl Keys {
         client_dst_connection_id: &[u8],
         side: Side,
     ) -> Self {
-        const CLIENT_LABEL: &[u8] = b"client in";
-        const SERVER_LABEL: &[u8] = b"server in";
+        const CLIENT_LABEL: Label<'static> = Label::fixed(b"client in");
+        const SERVER_LABEL: Label<'static> = Label::fixed(b"server in");
         let salt = version.initial_salt();
         let hs_secret = suite
             .inner
@@ -936,12 +936,12 @@ impl Version {
     fn initial_salt(self) -> &'static [u8; 20] {
         match self {
             Self::V1 => &[
-                // https://www.rfc-editor.org/rfc/rfc9001.html#name-initial-secrets
+                // https://www.rfc-editor.org/info/rfc9001#name-initial-secrets
                 0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8,
                 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
             ],
             Self::V2 => &[
-                // https://tools.ietf.org/html/rfc9369.html#name-initial-salt
+                // https://www.rfc-editor.org/info/rfc9369#name-initial-salt
                 0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26,
                 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
             ],
@@ -949,33 +949,33 @@ impl Version {
     }
 
     /// Key derivation label for packet keys.
-    pub(crate) fn packet_key_label(&self) -> &'static [u8] {
+    pub(crate) fn packet_key_label(&self) -> Label<'static> {
         match self {
-            Self::V1 => b"quic key",
-            Self::V2 => b"quicv2 key",
+            Self::V1 => Label::fixed(b"quic key"),
+            Self::V2 => Label::fixed(b"quicv2 key"),
         }
     }
 
     /// Key derivation label for packet "IV"s.
-    pub(crate) fn packet_iv_label(&self) -> &'static [u8] {
+    pub(crate) fn packet_iv_label(&self) -> Label<'static> {
         match self {
-            Self::V1 => b"quic iv",
-            Self::V2 => b"quicv2 iv",
+            Self::V1 => Label::fixed(b"quic iv"),
+            Self::V2 => Label::fixed(b"quicv2 iv"),
         }
     }
 
     /// Key derivation for header keys.
-    pub(crate) fn header_key_label(&self) -> &'static [u8] {
+    pub(crate) fn header_key_label(&self) -> Label<'static> {
         match self {
-            Self::V1 => b"quic hp",
-            Self::V2 => b"quicv2 hp",
+            Self::V1 => Label::fixed(b"quic hp"),
+            Self::V2 => Label::fixed(b"quicv2 hp"),
         }
     }
 
-    fn key_update_label(&self) -> &'static [u8] {
+    fn key_update_label(&self) -> Label<'static> {
         match self {
-            Self::V1 => b"quic ku",
-            Self::V2 => b"quicv2 ku",
+            Self::V1 => Label::fixed(b"quic ku"),
+            Self::V2 => Label::fixed(b"quicv2 ku"),
         }
     }
 }

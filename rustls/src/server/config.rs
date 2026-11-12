@@ -23,7 +23,9 @@ use crate::error::{Error, PeerMisbehaved};
 use crate::msgs::{ClientHelloPayload, ClientTicketRequest, ServerNamePayload};
 use crate::suites::Suite;
 use crate::sync::Arc;
-use crate::time_provider::{DefaultTimeProvider, TimeProvider};
+#[cfg(feature = "std")]
+use crate::time_provider::DefaultTimeProvider;
+use crate::time_provider::TimeProvider;
 use crate::verify::{ClientVerifier, DistinguishedName, NoClientAuth};
 use crate::{KeyLog, NoKeyLog, Tls12CipherSuite, Tls13CipherSuite, compress};
 
@@ -78,7 +80,8 @@ pub struct ServerConfig {
     /// The default is [`PreferClientOrder`].
     pub kx_selector: &'static dyn KeyExchangeSelector,
 
-    /// The maximum size of plaintext input to be emitted in a single TLS record.
+    /// The maximum size of TLS record to be emitted.
+    ///
     /// A value of None is equivalent to the [TLS maximum] of 16 kB, and this is
     /// the default.
     ///
@@ -88,7 +91,7 @@ pub struct ServerConfig {
     /// Setting this value to a little less than the TCP MSS may improve latency
     /// for stream-y workloads.
     ///
-    /// [TLS maximum]: https://datatracker.ietf.org/doc/html/rfc9846#section-5.1
+    /// [TLS maximum]: https://www.rfc-editor.org/info/rfc9846#section-5.1
     /// [Connection::new]: crate::Connection::new
     pub max_fragment_size: Option<usize>,
 
@@ -125,7 +128,7 @@ pub struct ServerConfig {
     ///
     /// The default does nothing and so key material is not logged.
     ///
-    /// See [RFC 9850](https://datatracker.ietf.org/doc/html/rfc9850) for background.
+    /// See [RFC 9850](https://www.rfc-editor.org/info/rfc9850) for background.
     pub key_log: Arc<dyn KeyLog>,
 
     /// Allows traffic secrets to be extracted after the handshake,
@@ -192,7 +195,7 @@ pub struct ServerConfig {
     /// **D.Q Transition of the TLS 1.2 KDF to Support the Extended Master
     /// Secret** from [FIPS 140-3 IG.pdf].
     ///
-    /// [RFC 7627]: https://datatracker.ietf.org/doc/html/rfc7627
+    /// [RFC 7627]: https://www.rfc-editor.org/info/rfc7627
     /// [FIPS 140-3 IG.pdf]: https://csrc.nist.gov/csrc/media/Projects/cryptographic-module-validation-program/documents/fips%20140-3/FIPS%20140-3%20IG.pdf
     pub require_ems: bool,
 
@@ -221,7 +224,7 @@ pub struct ServerConfig {
     /// The default caches the most recently used 4 compressions.
     pub cert_compression_cache: Arc<compress::CompressionCache>,
 
-    /// How to decompress the clients's certificate chain.
+    /// How to decompress the client's certificate chain.
     ///
     /// If this is non-empty, the [RFC 8879] certificate compression
     /// extension is offered when requesting client authentication,
@@ -252,6 +255,7 @@ impl ServerConfig {
     /// are reported at the end of the builder process.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
+    #[cfg(feature = "std")]
     pub fn builder(provider: Arc<CryptoProvider>) -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_details(provider, Arc::new(DefaultTimeProvider))
     }
@@ -420,7 +424,7 @@ pub trait ServerCredentialResolver: Debug + Send + Sync {
     /// Returning an empty slice will result in an error. The default implementation signals
     /// support for X.509 certificates. Implementations should return the same value every time.
     ///
-    /// See [RFC 7250](https://tools.ietf.org/html/rfc7250) for more information.
+    /// See [RFC 7250](https://www.rfc-editor.org/info/rfc7250) for more information.
     fn supported_certificate_types(&self) -> &'static [CertificateType] {
         &[CertificateType::X509]
     }
@@ -437,7 +441,7 @@ pub struct ClientHello<'a> {
     pub(super) cipher_suites: &'a [CipherSuite],
     /// The [certificate_authorities] extension, if it was sent by the client.
     ///
-    /// [certificate_authorities]: https://datatracker.ietf.org/doc/html/rfc9846#section-4.3.4
+    /// [certificate_authorities]: https://www.rfc-editor.org/info/rfc9846#section-4.3.4
     pub(super) certificate_authorities: Option<&'a [DistinguishedName]>,
     pub(super) named_groups: Option<&'a [NamedGroup]>,
 }
@@ -509,14 +513,14 @@ impl<'a> ClientHello<'a> {
     /// Returns `None` if the client did not include an ALPN extension.
     ///
     /// Application Layer Protocol Negotiation (ALPN) is a TLS extension that lets a client
-    /// submit a set of identifiers that each a represent an application-layer protocol.
+    /// submit a set of identifiers that each represent an application-layer protocol.
     /// The server will then pick its preferred protocol from the set submitted by the client.
     /// Each identifier is represented as a byte array, although common values are often ASCII-encoded.
-    /// See the official RFC-7301 specifications at <https://datatracker.ietf.org/doc/html/rfc7301>
+    /// See the official RFC-7301 specifications at <https://www.rfc-editor.org/info/rfc7301>
     /// for more information on ALPN.
     ///
     /// For example, a HTTP client might specify "http/1.1" and/or "h2". Other well-known values
-    /// are listed in the at IANA registry at
+    /// are listed in the IANA registry at
     /// <https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids>.
     ///
     /// The server can specify supported ALPN protocols by setting [`ServerConfig::alpn_protocols`].
@@ -552,7 +556,7 @@ impl<'a> ClientHello<'a> {
     ///
     /// Returns `None` if the client did not send this extension.
     ///
-    /// [certificate_authorities]: https://datatracker.ietf.org/doc/html/rfc9846#section-4.3.4
+    /// [certificate_authorities]: https://www.rfc-editor.org/info/rfc9846#section-4.3.4
     pub fn certificate_authorities(&self) -> Option<&'a [DistinguishedName]> {
         self.certificate_authorities
     }
@@ -571,9 +575,9 @@ impl<'a> ClientHello<'a> {
     /// of key exchange mechanisms, and does not relate at all to elliptic curves
     /// used for signatures.
     ///
-    /// [`elliptic_curves`]: https://datatracker.ietf.org/doc/html/rfc4492#section-5.1.1
-    /// [RFC 7919]: https://datatracker.ietf.org/doc/html/rfc7919#section-2
-    /// [`named_groups`]:https://datatracker.ietf.org/doc/html/rfc9846#section-4.3.7
+    /// [`elliptic_curves`]: https://www.rfc-editor.org/info/rfc4492#section-5.1.1
+    /// [RFC 7919]: https://www.rfc-editor.org/info/rfc7919#section-2
+    /// [`named_groups`]:https://www.rfc-editor.org/info/rfc9846#section-4.3.7
     pub fn named_groups(&self) -> Option<&'a [NamedGroup]> {
         self.named_groups
     }
@@ -591,8 +595,8 @@ impl<'a> ClientHello<'a> {
 ///
 /// When an SNI value is ignored, Rustls treats the client as if it sent no SNI at all.
 ///
-/// [RFC 1035]: https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.1
-/// [RFC 6066]: https://datatracker.ietf.org/doc/html/rfc6066#section-3
+/// [RFC 1035]: https://www.rfc-editor.org/info/rfc1035#section-2.3.1
+/// [RFC 6066]: https://www.rfc-editor.org/info/rfc6066#section-3
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum InvalidSniPolicy {
@@ -670,7 +674,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
     /// things like SNI hostname.
     ///
     /// Note that the end-entity certificate must have the
-    /// [Subject Alternative Name](https://tools.ietf.org/html/rfc6125#section-4.1)
+    /// [Subject Alternative Name](https://www.rfc-editor.org/info/rfc6125#section-4.1)
     /// extension to describe, e.g., the valid DNS name. The `commonName` field is
     /// disregarded.
     ///
@@ -696,7 +700,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
     /// things like SNI hostname.
     ///
     /// Note that the end-entity certificate must have the
-    /// [Subject Alternative Name](https://tools.ietf.org/html/rfc6125#section-4.1)
+    /// [Subject Alternative Name](https://www.rfc-editor.org/info/rfc6125#section-4.1)
     /// extension to describe, e.g., the valid DNS name. The `commonName` field is
     /// disregarded.
     ///
@@ -734,7 +738,10 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             cipher_suite_selector: &PreferClientOrder,
             kx_selector: &PreferClientOrder,
             max_fragment_size: None,
+            #[cfg(feature = "std")]
             session_storage: handy::ServerSessionMemoryCache::new(256),
+            #[cfg(not(feature = "std"))]
+            session_storage: Arc::new(handy::NoServerSessionStorage {}),
             ticketer: None,
             cert_resolver,
             alpn_protocols: Vec::new(),

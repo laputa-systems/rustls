@@ -29,11 +29,14 @@ use crate::crypto::kx::{
     ActiveKeyExchange, HybridKeyExchange, NamedGroup, SharedSecret, StartedKeyExchange,
 };
 use crate::crypto::{Identity, SelectedCredential, SignatureScheme, Signer, VerifiedIdentity};
-use crate::enums::{CertificateType, ContentType, HandshakeType, ProtocolVersion};
+use crate::enums::{
+    ApplicationProtocol, CertificateType, ContentType, HandshakeType, ProtocolVersion,
+};
 use crate::error::{
     ApiMisuse, Error, InvalidMessage, PeerIncompatible, PeerMisbehaved, RejectedEch,
 };
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
+use crate::key_log::KeyLog;
 use crate::msgs::{
     CERTIFICATE_MAX_SIZE_LIMIT, CertificatePayloadTls13, ChangeCipherSpecPayload, ClientExtensions,
     Codec, EchConfigPayload, EncryptedExtensions, ExtensionType, HandshakeMessagePayload,
@@ -42,7 +45,7 @@ use crate::msgs::{
     ServerHelloPayload, SizedPayload,
 };
 use crate::sealed::Sealed;
-use crate::suites::PartiallyExtractedSecrets;
+use crate::suites::{ConnectionTrafficSecrets, PartiallyExtractedSecrets};
 use crate::sync::Arc;
 use crate::tls13::key_schedule::{
     ClientHandshakeSecrets, ClientTrafficSecrets, EarlyTrafficEncrypter, KeyScheduleEarlyClient,
@@ -58,7 +61,7 @@ use crate::verify::{
     DigitallySignedStruct, FinishedMessageVerified, HandshakeSignatureValid, PeerVerified,
     ServerIdentity, SignatureVerificationInput,
 };
-use crate::{ConnectionTrafficSecrets, KeyLog, compress, crypto, quic};
+use crate::{compress, crypto, quic};
 
 pub(crate) static TLS13_HANDLER: &dyn ClientHandler<Tls13CipherSuite> = &Handler;
 
@@ -97,7 +100,7 @@ impl ClientHandler<Tls13CipherSuite> for Handler {
         // > A client which receives a legacy_session_id_echo field that does not
         // > match what it sent in the ClientHello MUST abort the handshake with an
         // > "illegal_parameter" alert.
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-4.1.3>
+        // <https://www.rfc-editor.org/info/rfc9846#section-4.1.3>
         if server_hello.session_id != st.input.session_id {
             return Err(PeerMisbehaved::UnmatchedSessionId.into());
         }
@@ -228,6 +231,11 @@ impl ClientHandler<Tls13CipherSuite> for Handler {
                     hello.sent_extensions = accepted.sent_extensions;
                     EchStatus::Accepted
                 }
+                // The server rejected our ECH offer, so it cannot resume: the outer
+                // hello only offered a GREASE PSK (RFC 9849 section 6.1.2).
+                None if server_hello.preshared_key.is_some() => {
+                    return Err(PeerMisbehaved::SelectedPskWithRejectedEch.into());
+                }
                 // The server rejected our ECH offer.
                 None => EchStatus::Rejected,
             };
@@ -289,6 +297,7 @@ impl ClientHandler<Tls13CipherSuite> for Handler {
                 sent_status_request: hello
                     .sent_extensions
                     .contains(&ExtensionType::StatusRequest),
+                alpn_protocol: None,
             },
             resuming_session,
             suite,
@@ -489,7 +498,7 @@ pub(super) fn emit_fake_ccs(
     output: &mut dyn Output<'_>,
 ) -> Result<(), Error> {
     // RFC 9001 §8.4 prohibits TLS middlebox compatibility mode in QUIC:
-    // <https://www.rfc-editor.org/rfc/rfc9001.html#section-8.4>
+    // <https://www.rfc-editor.org/info/rfc9001#section-8.4>
     if output.quic().is_some() {
         return Ok(());
     }
@@ -555,6 +564,7 @@ impl State<ClientSide> for ExpectEncryptedExtensions {
             selected_alpn,
             self.hs.config.check_selected_alpn,
         )?;
+        self.hs.alpn_protocol = selected_alpn.cloned();
 
         // RFC 9001 says: "While ALPN only specifies that servers use this alert, QUIC clients MUST
         // use error 0x0178 to terminate a connection when ALPN negotiation fails." We judge that
@@ -623,7 +633,17 @@ impl State<ClientSide> for ExpectEncryptedExtensions {
             Some(resuming_session) => {
                 if self.in_early_traffic {
                     match exts.early_data_ack {
-                        Some(()) => output.emit(Event::EarlyData(EarlyDataEvent::Accepted)),
+                        Some(()) => {
+                            // RFC 9846 section 4.3.10: early data is sent under the
+                            // ALPN protocol of the session being resumed.
+                            if resuming_session.alpn.as_ref() != selected_alpn {
+                                return Err(
+                                    PeerMisbehaved::EarlyDataAcceptedWithVariedApplicationProtocol
+                                        .into(),
+                                );
+                            }
+                            output.emit(Event::EarlyData(EarlyDataEvent::Accepted));
+                        }
                         None => {
                             output.emit(Event::EarlyData(EarlyDataEvent::Rejected));
                             // If no early traffic, set the encryption key for handshakes
@@ -648,6 +668,7 @@ impl State<ClientSide> for ExpectEncryptedExtensions {
                         suite: self.suite,
                         peer_identity,
                         quic_params,
+                        alpn: selected_alpn.cloned(),
                     },
                     client_auth: None,
                     sig_verified,
@@ -1249,12 +1270,14 @@ impl VerifySidePeerIdentity<ClientSide> for AwaitServerIdentityVerification {
                 signature: &self.cert_verify,
             })?;
 
+        let alpn = self.hs.alpn_protocol.clone();
         Ok(Box::new(ExpectFinished {
             hs: self.hs,
             session_input: Tls13ClientSessionInput {
                 suite: self.suite,
                 peer_identity: peer_identity.into_owned(),
                 quic_params: self.quic_params,
+                alpn,
             },
             client_auth: self.client_auth,
             sig_verified,
@@ -1563,6 +1586,7 @@ struct HandshakeState {
     key_schedule: KeyScheduleHandshake,
     kx_group: NamedGroup,
     sent_status_request: bool,
+    alpn_protocol: Option<ApplicationProtocol<'static>>,
 }
 
 // -- Traffic transit state (TLS1.3) --

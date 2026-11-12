@@ -9,7 +9,9 @@ use pki_types::PrivateKeyDer;
 use pki_types::{FipsStatus, ServerName, UnixTime};
 
 use super::ech::EchMode;
-use super::handy::{ClientSessionMemoryCache, FailResolveClientCert, NoClientSessionStorage};
+#[cfg(feature = "std")]
+use super::handy::ClientSessionMemoryCache;
+use super::handy::{FailResolveClientCert, NoClientSessionStorage};
 use super::{Tls12Session, Tls13Session};
 use crate::builder::{ConfigBuilder, WantsVerifier};
 use crate::client::connection::ClientConnectionBuilder;
@@ -25,7 +27,9 @@ use crate::error::{ApiMisuse, Error};
 use crate::key_log::NoKeyLog;
 use crate::suites::SupportedCipherSuite;
 use crate::sync::Arc;
-use crate::time_provider::{DefaultTimeProvider, TimeProvider};
+#[cfg(feature = "std")]
+use crate::time_provider::DefaultTimeProvider;
+use crate::time_provider::TimeProvider;
 use crate::verify::ServerVerifier;
 #[cfg(feature = "webpki")]
 use crate::webpki::{self, WebPkiServerVerifier};
@@ -41,7 +45,7 @@ use crate::{DistinguishedName, DynHasher, KeyLog, compress};
 /// These must be created via the [`ClientConfig::builder()`] or [`ClientConfig::builder_with_details()`]
 /// function.
 ///
-/// Note that using [`ConfigBuilder<ClientConfig, WantsVersions>::with_ech()`] will produce a common
+/// Note that using [`ConfigBuilder<ClientConfig, WantsVerifier>::with_ech()`] will produce a common
 /// configuration specific to the provided [`crate::client::EchConfig`] that may not be appropriate
 /// for all connections made by the program. In this case the configuration should only be shared
 /// by connections intended for domains that offer the provided [`crate::client::EchConfig`] in
@@ -50,7 +54,7 @@ use crate::{DistinguishedName, DynHasher, KeyLog, compress};
 /// # Defaults
 ///
 /// * [`ClientConfig::max_fragment_size`]: the default is `None` (meaning 16kB).
-/// * [`ClientConfig::resumption`]: supports resumption with up to 256 server names, using session
+/// * [`ClientConfig::resumption`]: supports resumption for up to 32 server names, using session
 ///   ids or tickets, with a max of eight tickets per server.
 /// * [`ClientConfig::alpn_protocols`]: the default is empty -- no ALPN protocol is negotiated.
 /// * [`ClientConfig::key_log`]: key material is not logged.
@@ -96,8 +100,10 @@ pub struct ClientConfig {
     /// [`ServerVerifier::hash_config()`]: crate::verify::ServerVerifier::hash_config()
     pub resumption: Resumption,
 
-    /// The maximum size of plaintext input to be emitted in a single TLS record.
-    /// A value of None is equivalent to the [TLS maximum] of 16 kB.
+    /// The maximum size of TLS record to be emitted.
+    ///
+    /// A value of None is equivalent to the [TLS maximum] of 16 kB, and this is
+    /// the default.
     ///
     /// rustls enforces an arbitrary minimum of 32 bytes for this field.
     /// Out of range values are reported as errors when initializing a connection.
@@ -105,7 +111,7 @@ pub struct ClientConfig {
     /// Setting this value to a little less than the TCP MSS may improve latency
     /// for stream-y workloads.
     ///
-    /// [TLS maximum]: https://datatracker.ietf.org/doc/html/rfc9846#section-5.1
+    /// [TLS maximum]: https://www.rfc-editor.org/info/rfc9846#section-5.1
     pub max_fragment_size: Option<usize>,
 
     /// Whether to send the Server Name Indication (SNI) extension
@@ -118,7 +124,7 @@ pub struct ClientConfig {
     ///
     /// The default does nothing.
     ///
-    /// See [RFC 9850](https://datatracker.ietf.org/doc/html/rfc9850) for background.
+    /// See [RFC 9850](https://www.rfc-editor.org/info/rfc9850) for background.
     pub key_log: Arc<dyn KeyLog>,
 
     /// Allows traffic secrets to be extracted after the handshake,
@@ -141,7 +147,7 @@ pub struct ClientConfig {
     /// **D.Q Transition of the TLS 1.2 KDF to Support the Extended Master
     /// Secret** from [FIPS 140-3 IG.pdf].
     ///
-    /// [RFC 7627]: https://datatracker.ietf.org/doc/html/rfc7627
+    /// [RFC 7627]: https://www.rfc-editor.org/info/rfc7627
     /// [FIPS 140-3 IG.pdf]: https://csrc.nist.gov/csrc/media/Projects/cryptographic-module-validation-program/documents/fips%20140-3/FIPS%20140-3%20IG.pdf
     pub require_ems: bool,
 
@@ -149,7 +155,7 @@ pub struct ClientConfig {
     ///
     /// Set to `None` to disable sending the extension (the default).
     ///
-    /// [RFC 9149]: https://datatracker.ietf.org/doc/html/rfc9149
+    /// [RFC 9149]: https://www.rfc-editor.org/info/rfc9149
     pub send_ticket_request: Option<TicketRequest>,
 
     /// Items that affect the fundamental security properties of a connection.
@@ -157,26 +163,26 @@ pub struct ClientConfig {
 
     /// How to decompress the server's certificate chain.
     ///
-    /// If this is non-empty, the [RFC 8779] certificate compression
+    /// If this is non-empty, the [RFC 8879] certificate compression
     /// extension is offered, and any compressed certificates are
     /// transparently decompressed during the handshake.
     ///
     /// This only applies to TLS1.3 connections.  It is ignored for
     /// TLS1.2 connections.
     ///
-    /// [RFC 8779]: https://datatracker.ietf.org/doc/rfc8879/
+    /// [RFC 8879]: https://datatracker.ietf.org/doc/rfc8879/
     pub cert_decompressors: Vec<&'static dyn compress::CertDecompressor>,
 
     /// How to compress the client's certificate chain.
     ///
     /// If a server supports this extension, and advertises support
     /// for one of the compression algorithms included here, the
-    /// client certificate will be compressed according to [RFC 8779].
+    /// client certificate will be compressed according to [RFC 8879].
     ///
     /// This only applies to TLS1.3 connections.  It is ignored for
     /// TLS1.2 connections.
     ///
-    /// [RFC 8779]: https://datatracker.ietf.org/doc/rfc8879/
+    /// [RFC 8879]: https://datatracker.ietf.org/doc/rfc8879/
     pub cert_compressors: Vec<&'static dyn compress::CertCompressor>,
 
     /// Caching for compressed certificates.
@@ -195,6 +201,7 @@ impl ClientConfig {
     /// This will use the provider's configured ciphersuites.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
+    #[cfg(feature = "std")]
     pub fn builder(provider: Arc<CryptoProvider>) -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_details(provider, Arc::new(DefaultTimeProvider))
     }
@@ -401,7 +408,7 @@ pub trait ClientCredentialResolver: fmt::Debug + Send + Sync + Any {
     /// Return `None` to continue the handshake without any client authentication.  The server
     /// may reject the handshake later if it requires authentication.
     ///
-    /// [RFC 5280 A.1]: https://www.rfc-editor.org/rfc/rfc5280#appendix-A.1
+    /// [RFC 5280 A.1]: https://www.rfc-editor.org/info/rfc5280#appendix-A.1
     ///
     /// [`Credentials`]: crate::crypto::Credentials
     /// [`Credentials::signer()`]: crate::crypto::Credentials::signer
@@ -413,7 +420,7 @@ pub trait ClientCredentialResolver: fmt::Debug + Send + Sync + Any {
     /// Should return the empty slice if the resolver does not have any credentials to send.
     /// Implementations should return the same value every time.
     ///
-    /// See [RFC 7250](https://tools.ietf.org/html/rfc7250) for more information.
+    /// See [RFC 7250](https://www.rfc-editor.org/info/rfc7250) for more information.
     fn supported_certificate_types(&self) -> &'static [CertificateType];
 
     /// Instance configuration should be input to `h`.
@@ -451,7 +458,7 @@ impl CredentialRequest<'_> {
     ///
     /// If the server does not support [RFC 7250], this will be [`CertificateType::X509`].
     ///
-    /// [RFC 7250]: https://tools.ietf.org/html/rfc7250
+    /// [RFC 7250]: https://www.rfc-editor.org/info/rfc7250
     pub fn negotiated_type(&self) -> CertificateType {
         self.negotiated_type
     }
@@ -552,6 +559,7 @@ impl Resumption {
     ///
     /// This is the default `Resumption` choice, and enables resuming a TLS 1.2 session with
     /// a session id or RFC 5077 ticket.
+    #[cfg(feature = "std")]
     pub fn in_memory_sessions(num: usize) -> Self {
         Self {
             store: Arc::new(ClientSessionMemoryCache::new(num)),
@@ -591,7 +599,14 @@ impl Default for Resumption {
     /// Create an in-memory session store resumption with up to 256 server names, allowing
     /// a TLS 1.2 session to resume with a session id or RFC 5077 ticket.
     fn default() -> Self {
-        Self::in_memory_sessions(256)
+        #[cfg(feature = "std")]
+        {
+            Self::in_memory_sessions(256)
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Self::disabled()
+        }
     }
 }
 
@@ -615,7 +630,7 @@ pub enum Tls12Resumption {
 /// Number of TLS 1.3 session tickets to request via the [RFC 9149]
 /// `ticket_request` extension.
 ///
-/// [RFC 9149]: https://datatracker.ietf.org/doc/html/rfc9149
+/// [RFC 9149]: https://www.rfc-editor.org/info/rfc9149
 #[expect(clippy::exhaustive_structs)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TicketRequest {

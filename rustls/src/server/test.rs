@@ -18,7 +18,7 @@ use crate::crypto::kx::{
     SupportedKxGroup,
 };
 use crate::crypto::test_provider::{
-    FAKE_HASH, FAKE_HMAC, KEY_EXCHANGE_GROUP, TLS_TEST_SUITE, TLS13_TEST_SUITE_ALT,
+    HMAC_SHA256, KEY_EXCHANGE_GROUP, SHA256, TLS_TEST_SUITE, TLS13_TEST_SUITE_ALT,
 };
 use crate::crypto::{
     CertificateIdentity, CipherSuite, Credentials, CryptoProvider, Identity, SignatureScheme,
@@ -235,6 +235,44 @@ fn test_server_rejects_non_empty_renegotiation_info_in_initial_handshake() {
     assert_eq!(
         process(&mut input, &mut conn).unwrap_err(),
         Error::PeerMisbehaved(PeerMisbehaved::NonEmptyRenegotiationInfo)
+    );
+}
+
+#[test]
+fn server_rejects_oversized_plaintext_record() {
+    let config = ServerConfig::builder(TEST_PROVIDER.into())
+        .with_no_client_auth()
+        .with_single_cert(server_identity(), server_key())
+        .unwrap();
+    let mut conn = Connection::new(config.into()).unwrap();
+    let mut input = VecInput::default();
+
+    // pad the ClientHello with a key share for an unknown group, so that
+    // the whole message is sent in one unprotected record over 2^14 bytes
+    let mut ch = minimal_client_hello();
+    ch.extensions
+        .key_shares
+        .as_mut()
+        .unwrap()
+        .push(KeyShareEntry {
+            group: NamedGroup::from(0xfe01),
+            payload: vec![0; 16_384].into(),
+        });
+    let ch = Message {
+        version: EncodableVersion::Legacy(ProtocolVersion::TLSv1_2),
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ClientHello(
+            ch,
+        ))),
+    };
+    let bytes = ch.into_wire_bytes();
+    let mut rd = bytes.as_slice();
+    while !rd.is_empty() {
+        input.read(&mut rd).unwrap();
+    }
+
+    assert_eq!(
+        process(&mut input, &mut conn).unwrap_err(),
+        Error::PeerSentOversizedRecord
     );
 }
 
@@ -691,12 +729,12 @@ impl ActiveKeyExchange for ActiveFakeFfdhe {
 static TLS_DHE_RSA_WITH_AES_128_GCM_SHA256: Tls12CipherSuite = Tls12CipherSuite {
     common: CipherSuiteCommon {
         suite: CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
-        hash_provider: FAKE_HASH,
+        hash_provider: SHA256,
         confidentiality_limit: 1,
     },
     kx: KeyExchangeAlgorithm::DHE,
     protocol_version: TLS12_VERSION,
-    prf_provider: &tls12::PrfUsingHmac(FAKE_HMAC),
+    prf_provider: &tls12::PrfUsingHmac(HMAC_SHA256),
     sign: &[SignatureScheme::ECDSA_NISTP256_SHA256],
     aead_alg: &FakeAead,
 };
@@ -704,12 +742,12 @@ static TLS_DHE_RSA_WITH_AES_128_GCM_SHA256: Tls12CipherSuite = Tls12CipherSuite 
 static TLS_DHE_RSA_WITH_AES_256_GCM_SHA384: Tls12CipherSuite = Tls12CipherSuite {
     common: CipherSuiteCommon {
         suite: CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
-        hash_provider: FAKE_HASH,
+        hash_provider: SHA256,
         confidentiality_limit: 0,
     },
     kx: KeyExchangeAlgorithm::DHE,
     protocol_version: TLS12_VERSION,
-    prf_provider: &tls12::PrfUsingHmac(FAKE_HMAC),
+    prf_provider: &tls12::PrfUsingHmac(HMAC_SHA256),
     sign: &[SignatureScheme::ECDSA_NISTP256_SHA256],
     aead_alg: &FakeAead,
 };

@@ -36,7 +36,9 @@ pub use receive::{SliceInput, TlsInputBuffer, VecInput};
 mod send;
 pub(crate) use send::{Encrypter, SendOutput, SendPath};
 
+#[cfg(feature = "std")]
 pub(crate) mod split;
+#[cfg(feature = "std")]
 use split::SplitConnection;
 
 /// A TLS connection, parametrized by the side ([`ClientSide`] or [`ServerSide`]).
@@ -192,10 +194,8 @@ impl<Side: SideData> Connection<Side, Tcp> {
     /// It also separates out the [`ConnectionOutputs`] which gives the application direct control
     /// of how long this is kept.
     ///
-    /// This fails if:
-    ///
-    /// - the handshake is not complete. Check with [`Connection::is_handshaking()`].
-    /// - there is any buffered TLS data to send.  Obtain it first with [`Connection::write()`].
+    /// This fails if the handshake is not complete. Check with [`Connection::is_handshaking()`].
+    #[cfg(feature = "std")]
     pub fn split(self) -> Result<SplitConnection<Side>, Error> {
         SplitConnection::try_from(self)
     }
@@ -305,8 +305,9 @@ impl<T: Transport> Connection<ServerSide, T> {
     /// Set the resumption data to embed in future resumption tickets supplied to the client.
     ///
     /// Defaults to the empty byte string. Must be less than 2^15 bytes to allow room for other
-    /// data. Should be called while `is_handshaking` returns true to ensure all transmitted
-    /// resumption tickets are affected.
+    /// data. Should be called before the `ClientHello` is fully processed to ensure all transmitted
+    /// resumption tickets are affected (it returns [`ApiMisuse::ResumptionDataProvidedTooLate`]
+    /// otherwise.)
     ///
     /// Integrity will be assured by rustls, but the data will be visible to the client. If secrecy
     /// from the client is desired, encrypt the data separately.
@@ -457,7 +458,7 @@ impl<'a, 'm> MessageHandler<'a, 'm, ServerSide> {
     /// [`next_payload()`][MessageHandler::next_payload] and
     /// [`handle_all()`][MessageHandler::handle_all], so it can be ignored here.
     ///
-    /// [RFC 8446 appendix E.5]: https://datatracker.ietf.org/doc/html/rfc8446#appendix-E.5
+    /// [RFC 8446 appendix E.5]: https://www.rfc-editor.org/info/rfc8446#appendix-E.5
     pub fn next_early_data(&mut self) -> Option<Result<Payload<'_>, Error>> {
         if self.done {
             return None;
@@ -596,7 +597,7 @@ impl KeyingMaterialExporter {
     /// This function is not meaningful if `output.len()` is zero and will
     /// return an error in that case.
     ///
-    /// [RFC 5705]: https://datatracker.ietf.org/doc/html/rfc5705
+    /// [RFC 5705]: https://www.rfc-editor.org/info/rfc5705
     pub fn derive<T: AsMut<[u8]>>(
         &self,
         label: &[u8],
@@ -622,7 +623,7 @@ impl fmt::Debug for KeyingMaterialExporter {
 
 /// This trait is for any object that can export keying material.
 ///
-/// The terminology comes from [RFC 5705](https://datatracker.ietf.org/doc/html/rfc5705)
+/// The terminology comes from [RFC 5705](https://www.rfc-editor.org/info/rfc5705)
 /// but doesn't really involve "exporting" key material (in the usual meaning of "export"
 /// -- of moving an artifact from one domain to another) but is best thought of as key
 /// diversification using an existing secret.  That secret is implicit in this interface,
@@ -737,7 +738,7 @@ impl<'q> Output<'_> for SideCommonOutput<'_, 'q> {
     }
 }
 
-/// Data specific to the peer's side (client or server).
+/// Data specific to our side of the connection (client or server).
 #[expect(private_bounds)]
 pub trait SideData: SideOutput + fmt::Debug + private::Side + Sized + 'static {
     /// Type representing an in-progress TCP handshake.

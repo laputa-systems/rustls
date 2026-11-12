@@ -432,7 +432,7 @@ impl<'a> Codec<'a> for ClientExtensions<'a> {
 /// Representation of the `ECHClientHello` client extension specified in
 /// [RFC 9849 Section 5].
 ///
-/// [RFC 9849 Section 5]: <https://datatracker.ietf.org/doc/html/rfc9849#section-5>
+/// [RFC 9849 Section 5]: <https://www.rfc-editor.org/info/rfc9849#section-5>
 #[derive(Clone, Debug)]
 pub(crate) enum EncryptedClientHello {
     /// A `ECHClientHello` with type [EchClientHelloType::ClientHelloOuter].
@@ -471,7 +471,7 @@ impl Codec<'_> for EncryptedClientHello {
 /// Representation of the ECHClientHello extension with type outer specified in
 /// [RFC 9849 Section 5].
 ///
-/// [RFC 9849 Section 5]: <https://datatracker.ietf.org/doc/html/rfc9849#section-5>
+/// [RFC 9849 Section 5]: <https://www.rfc-editor.org/info/rfc9849#section-5>
 #[derive(Clone, Debug)]
 pub(crate) struct EncryptedClientHelloOuter {
     /// The cipher suite used to encrypt ClientHelloInner. Must match a value from
@@ -519,7 +519,7 @@ pub(crate) enum ServerNamePayload<'a> {
 impl ServerNamePayload<'_> {
     pub(super) fn into_owned(self) -> ServerNamePayload<'static> {
         match self {
-            Self::SingleDnsName(d) => ServerNamePayload::SingleDnsName(d.to_owned()),
+            Self::SingleDnsName(d) => ServerNamePayload::SingleDnsName(d.into_owned()),
             Self::IpAddress => ServerNamePayload::IpAddress,
             Self::Invalid => ServerNamePayload::Invalid,
         }
@@ -592,7 +592,7 @@ impl<'a> Codec<'a> for ServerNamePayload<'a> {
 
             found = match payload {
                 HostNamePayload::HostName(dns_name) => {
-                    Some(Self::SingleDnsName(dns_name.to_owned()))
+                    Some(Self::SingleDnsName(dns_name.into_owned()))
                 }
 
                 HostNamePayload::IpAddress(_invalid) => {
@@ -614,24 +614,9 @@ impl<'a> Codec<'a> for ServerNamePayload<'a> {
     }
 }
 
-impl<'a> From<&DnsName<'a>> for ServerNamePayload<'static> {
-    fn from(value: &DnsName<'a>) -> Self {
-        Self::SingleDnsName(trim_hostname_trailing_dot_for_sni(value))
-    }
-}
-
-fn trim_hostname_trailing_dot_for_sni(dns_name: &DnsName<'_>) -> DnsName<'static> {
-    let dns_name_str = dns_name.as_ref();
-
-    // RFC 6066: "The hostname is represented as a byte string using
-    // ASCII encoding without a trailing dot"
-    if dns_name_str.ends_with('.') {
-        let trimmed = &dns_name_str[0..dns_name_str.len() - 1];
-        DnsName::try_from(trimmed)
-            .unwrap()
-            .to_owned()
-    } else {
-        dns_name.to_owned()
+impl<'a> From<DnsName<'a>> for ServerNamePayload<'static> {
+    fn from(value: DnsName<'a>) -> Self {
+        Self::SingleDnsName(value.into_owned())
     }
 }
 
@@ -648,7 +633,7 @@ impl HostNamePayload {
         let raw = SizedPayload::<u16, NonEmpty>::read(r)?;
 
         match ServerName::try_from(raw.bytes()) {
-            Ok(ServerName::DnsName(d)) => Ok(Self::HostName(d.to_owned())),
+            Ok(ServerName::DnsName(d)) => Ok(Self::HostName(d.into_owned())),
             Ok(ServerName::IpAddress(_)) => Ok(Self::IpAddress(raw.into_owned())),
             Ok(_) | Err(_) => Ok(Self::Invalid(raw.into_owned())),
         }

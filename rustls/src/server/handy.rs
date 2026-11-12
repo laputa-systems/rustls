@@ -23,6 +23,7 @@ impl StoresServerSessions for NoServerSessionStorage {
     }
 }
 
+#[cfg(feature = "std")]
 mod cache {
     use core::fmt::Formatter;
 
@@ -148,9 +149,10 @@ mod cache {
     }
 }
 
+#[cfg(feature = "std")]
 pub use cache::ServerSessionMemoryCache;
 
-#[cfg(feature = "webpki")]
+#[cfg(all(feature = "webpki", feature = "std"))]
 mod sni_resolver {
     use core::fmt::Debug;
 
@@ -245,7 +247,7 @@ mod sni_resolver {
         fn test_server_name_resolver_handles_unknown_name() {
             let server_name = DnsName::try_from("hello.com")
                 .unwrap()
-                .to_owned();
+                .into_owned();
             let mut ch = ClientHello::empty();
             ch.server_name = Some(Cow::Borrowed(&server_name));
 
@@ -255,7 +257,7 @@ mod sni_resolver {
     }
 }
 
-#[cfg(feature = "webpki")]
+#[cfg(all(feature = "webpki", feature = "std"))]
 pub use sni_resolver::ServerNameResolver;
 
 #[cfg(test)]

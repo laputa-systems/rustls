@@ -132,12 +132,12 @@ impl Tls12Extensions {
         config: &ServerConfig,
     ) -> Result<(Self, Box<ServerExtensions<'static>>), Error> {
         let ep = ExtensionProcessing::new(hello, config);
-        let (alpn_protocol, common) =
-            ep.process_common(extra_exts, output, ocsp_response, resumedata)?;
+        let common = ep.process_common(extra_exts, output, ocsp_response, resumedata)?;
+        let alpn_protocol = common.alpn_protocol();
 
         let mut extensions = Box::new(ServerExtensions {
             server_name_ack: common.server_name_ack,
-            selected_protocol: common.selected_protocol,
+            selected_protocol: common.selected_protocol.into(),
             transport_parameters: common.transport_parameters,
             ..ServerExtensions::default()
         });
@@ -208,12 +208,31 @@ impl Tls13Extensions {
         config: &ServerConfig,
     ) -> Result<(Self, Box<EncryptedExtensions<'static>>), Error> {
         let ep = ExtensionProcessing::new(hello, config);
-        let (alpn_protocol, common) =
-            ep.process_common(extra_exts, output, ocsp_response, resumedata)?;
+        let common = ep.process_common(extra_exts, output, ocsp_response, resumedata)?;
+
+        if let Some(quic) = output.quic() {
+            // RFC9001: "When using ALPN, endpoints MUST immediately close a connection
+            // (...) if an application protocol is not negotiated."
+            if !matches!(
+                common.selected_protocol,
+                AlpnDecision::Selected(_) | AlpnDecision::Disabled
+            ) {
+                return Err(Error::NoApplicationProtocol);
+            }
+
+            match hello.transport_parameters.as_ref() {
+                Some(params) => quic.transport_parameters(params.to_owned().into_vec()),
+                None => {
+                    return Err(PeerMisbehaved::MissingQuicTransportParameters.into());
+                }
+            }
+        }
+
+        let alpn_protocol = common.alpn_protocol();
 
         let mut extensions = Box::new(EncryptedExtensions {
             server_name_ack: common.server_name_ack,
-            selected_protocol: common.selected_protocol,
+            selected_protocol: common.selected_protocol.into(),
             transport_parameters: common.transport_parameters,
             ..EncryptedExtensions::default()
         });
@@ -273,7 +292,7 @@ impl<'a> ExtensionProcessing<'a> {
         output: &mut dyn Output<'_>,
         ocsp_response: &mut Option<&[u8]>,
         resumedata: Option<&CommonServerSessionValue<'_>>,
-    ) -> Result<(Option<ApplicationProtocol<'static>>, CommonExtensions), Error> {
+    ) -> Result<CommonExtensions, Error> {
         let Self { config, hello } = self;
         let mut extensions = CommonExtensions::default();
 
@@ -286,50 +305,30 @@ impl<'a> ExtensionProcessing<'a> {
 
         // ALPN
         let our_protocols = &config.alpn_protocols;
-        let chosen_protocol = if let Some(their_protocols) = &hello.protocols {
-            if let Some(selected_protocol) = our_protocols.iter().find(|ours| {
-                their_protocols
+        let chosen_protocol = match (&hello.protocols, our_protocols.as_slice()) {
+            (Some(their_protocols), [_, ..]) => {
+                let selected_protocol = our_protocols
                     .iter()
-                    .any(|theirs| theirs.as_ref() == ours.as_ref())
-            }) {
+                    .find(|ours| {
+                        their_protocols
+                            .iter()
+                            .any(|theirs| theirs.as_ref() == ours.as_ref())
+                    })
+                    .ok_or(Error::NoApplicationProtocol)?;
                 debug!("Chosen ALPN protocol {selected_protocol:?}");
 
-                Some(selected_protocol)
-            } else if !our_protocols.is_empty() {
-                return Err(Error::NoApplicationProtocol);
-            } else {
-                None
+                AlpnDecision::Selected(SingleProtocolName::new(selected_protocol.to_owned()))
             }
-        } else {
-            None
+            (None, []) => AlpnDecision::Disabled,
+            (_, []) => AlpnDecision::NoServerOffer,
+            (None, _) => AlpnDecision::NoClientOffer,
         };
 
-        // Enact ALPN selection by telling peer and high-level API.
-        if let Some(protocol) = &chosen_protocol {
-            extensions.selected_protocol = Some(SingleProtocolName::new((*protocol).to_owned()));
-            output.output(OutputEvent::ApplicationProtocol((*protocol).to_owned()));
+        // Enact ALPN selection by telling high-level API.
+        if let AlpnDecision::Selected(protocol) = &chosen_protocol {
+            output.output(OutputEvent::ApplicationProtocol(protocol.as_ref().clone()));
         }
-
-        if let Some(quic) = output.quic() {
-            // QUIC has strict ALPN, unlike TLS's more backwards-compatible behavior. RFC 9001
-            // says: "The server MUST treat the inability to select a compatible application
-            // protocol as a connection error of type 0x0178". We judge that ALPN was desired
-            // (rather than some out-of-band protocol negotiation mechanism) if and only if any ALPN
-            // protocols were configured locally or offered by the client. This helps prevent
-            // successful establishment of connections between peers that can't understand
-            // each other.
-            if chosen_protocol.is_none() && (!our_protocols.is_empty() || hello.protocols.is_some())
-            {
-                return Err(Error::NoApplicationProtocol);
-            }
-
-            match hello.transport_parameters.as_ref() {
-                Some(params) => quic.transport_parameters(params.to_owned().into_vec()),
-                None => {
-                    return Err(PeerMisbehaved::MissingQuicTransportParameters.into());
-                }
-            }
-        }
+        extensions.selected_protocol = chosen_protocol;
 
         let for_resume = resumedata.is_some();
         // SNI
@@ -347,7 +346,7 @@ impl<'a> ExtensionProcessing<'a> {
             ocsp_response.take();
         }
 
-        Ok((chosen_protocol.map(|p| p.to_owned()), extensions))
+        Ok(extensions)
     }
 }
 
@@ -358,8 +357,35 @@ impl<'a> ExtensionProcessing<'a> {
 #[derive(Default)]
 struct CommonExtensions {
     server_name_ack: Option<()>,
-    selected_protocol: Option<SingleProtocolName>,
+    selected_protocol: AlpnDecision,
     transport_parameters: Option<Payload<'static>>,
+}
+
+impl CommonExtensions {
+    fn alpn_protocol(&self) -> Option<ApplicationProtocol<'static>> {
+        match &self.selected_protocol {
+            AlpnDecision::Selected(p) => Some(p.as_ref().clone()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default)]
+enum AlpnDecision {
+    #[default]
+    Disabled,
+    Selected(SingleProtocolName),
+    NoServerOffer,
+    NoClientOffer,
+}
+
+impl From<AlpnDecision> for Option<SingleProtocolName> {
+    fn from(value: AlpnDecision) -> Self {
+        match value {
+            AlpnDecision::Selected(protocol) => Some(protocol),
+            _ => None,
+        }
+    }
 }
 
 fn select_cert_type(
@@ -370,7 +396,7 @@ fn select_cert_type(
         return Err(ApiMisuse::NoSupportedCertificateTypes.into());
     }
 
-    // https://www.rfc-editor.org/rfc/rfc7250#section-4.1
+    // https://www.rfc-editor.org/info/rfc7250#section-4.1
     // If the client has no remaining certificate types to send in
     // the client hello, other than the default X.509 type, it MUST omit the
     // client_certificate_type extension in the client hello.
@@ -695,7 +721,7 @@ impl ExpectClientHello {
         }
 
         let first_supported_dhe_kxg = if T::VERSION == ProtocolVersion::TLSv1_2 {
-            // https://datatracker.ietf.org/doc/html/rfc7919#section-4 (paragraph 2)
+            // https://www.rfc-editor.org/info/rfc7919#section-4 (paragraph 2)
             let first_supported_dhe_kxg = self
                 .config
                 .provider
@@ -713,7 +739,7 @@ impl ExpectClientHello {
             return Err(PeerIncompatible::NoKxGroupsInCommon.into());
         }
 
-        // RFC 7919 (https://datatracker.ietf.org/doc/html/rfc7919#section-4) requires us to send
+        // RFC 7919 (https://www.rfc-editor.org/info/rfc7919#section-4) requires us to send
         // the InsufficientSecurity alert in case we don't recognize client's FFDHE groups (i.e.,
         // `suitable_suites` becomes empty). But that does not make a lot of sense (e.g., client
         // proposes FFDHE4096 and we only support FFDHE2048), so we ignore that requirement here,

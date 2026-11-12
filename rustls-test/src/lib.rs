@@ -821,42 +821,144 @@ pub fn webpki_server_verifier_builder(
     WebPkiServerVerifier::builder(roots, provider)
 }
 
+#[derive(Debug, Default)]
+pub struct HandshakeBuffers {
+    pub client_input: VecInput,
+    pub client_output: Vec<u8>,
+    pub server_input: VecInput,
+    pub server_output: Vec<u8>,
+}
+
+impl HandshakeBuffers {
+    pub fn handshake(
+        &mut self,
+        client: &mut Connection<ClientSide, Tcp>,
+        server: &mut Connection<ServerSide, Tcp>,
+    ) -> (usize, usize) {
+        self.handshake_until_error(client, server)
+            .expect("handshake failed unexpectedly")
+    }
+
+    pub fn handshake_until_error(
+        &mut self,
+        client: &mut Connection<ClientSide, Tcp>,
+        server: &mut Connection<ServerSide, Tcp>,
+    ) -> Result<(usize, usize), ErrorFromPeer> {
+        let (mut to_client, mut to_server) = (0, 0);
+        while server.is_handshaking() || client.is_handshaking() {
+            to_server += transfer(&mut self.client_output, &mut self.server_input);
+            server
+                .read_tls(&mut self.server_input, &mut self.server_output)
+                .handle_all(&mut Vec::new())
+                .map_err(ErrorFromPeer::Server)?;
+            to_client += transfer(&mut self.server_output, &mut self.client_input);
+            client
+                .read_tls(&mut self.client_input, &mut self.client_output)
+                .handle_all(&mut Vec::new())
+                .map_err(ErrorFromPeer::Client)?;
+        }
+
+        Ok((to_server, to_client))
+    }
+
+    pub fn handshake_until_both_error(
+        &mut self,
+        client: &mut Connection<ClientSide, Tcp>,
+        server: &mut Connection<ServerSide, Tcp>,
+    ) -> Result<(), Vec<ErrorFromPeer>> {
+        match self.handshake_until_error(client, server) {
+            Err(server_err @ ErrorFromPeer::Server(_)) => {
+                let mut errors = vec![server_err];
+                transfer(&mut self.server_output, &mut self.client_input);
+                let client_err = client
+                    .read_tls(&mut self.client_input, &mut self.client_output)
+                    .handle_all(&mut Vec::new())
+                    .map_err(ErrorFromPeer::Client)
+                    .expect_err("client didn't produce error after server error");
+                errors.push(client_err);
+                Err(errors)
+            }
+
+            Err(client_err @ ErrorFromPeer::Client(_)) => {
+                let mut errors = vec![client_err];
+                transfer(&mut self.client_output, &mut self.server_input);
+                let server_err = server
+                    .read_tls(&mut self.server_input, &mut self.server_output)
+                    .handle_all(&mut Vec::new())
+                    .map_err(ErrorFromPeer::Server)
+                    .expect_err("server didn't produce error after client error");
+                errors.push(server_err);
+                Err(errors)
+            }
+
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Like [`HandshakeBuffers::handshake()`], but collects early data received by the server into `server_early_data`.
+    pub fn handshake_collecting_early_data(
+        &mut self,
+        client: &mut Connection<ClientSide, Tcp>,
+        server: &mut Connection<ServerSide, Tcp>,
+        server_early_data: &mut Vec<u8>,
+    ) {
+        while server.is_handshaking() || client.is_handshaking() {
+            transfer(&mut self.client_output, &mut self.server_input);
+            let mut handler = server.read_tls(&mut self.server_input, &mut self.server_output);
+            while let Some(result) = handler.next_early_data() {
+                server_early_data.extend_from_slice(result.unwrap().bytes());
+            }
+            handler
+                .handle_all(&mut Vec::new())
+                .unwrap();
+            transfer(&mut self.server_output, &mut self.client_input);
+            client
+                .read_tls(&mut self.client_input, &mut self.client_output)
+                .handle_all(&mut Vec::new())
+                .unwrap();
+        }
+    }
+}
+
 pub fn make_pair(
     kt: KeyType,
     provider: &CryptoProvider,
-    client_output: &mut Vec<u8>,
-) -> (Connection<ClientSide, Tcp>, Connection<ServerSide, Tcp>) {
+) -> (
+    Connection<ClientSide, Tcp>,
+    Connection<ServerSide, Tcp>,
+    HandshakeBuffers,
+) {
     make_pair_for_configs(
         make_client_config(kt, provider),
         make_server_config(kt, provider),
-        client_output,
     )
 }
 
 pub fn make_pair_for_configs(
     client_config: ClientConfig,
     server_config: ServerConfig,
-    client_output: &mut Vec<u8>,
-) -> (Connection<ClientSide, Tcp>, Connection<ServerSide, Tcp>) {
-    make_pair_for_arc_configs(
-        &Arc::new(client_config),
-        &Arc::new(server_config),
-        client_output,
-    )
+) -> (
+    Connection<ClientSide, Tcp>,
+    Connection<ServerSide, Tcp>,
+    HandshakeBuffers,
+) {
+    make_pair_for_arc_configs(&Arc::new(client_config), &Arc::new(server_config))
 }
 
 pub fn make_pair_for_arc_configs(
     client_config: &Arc<ClientConfig>,
     server_config: &Arc<ServerConfig>,
-    client_output: &mut Vec<u8>,
-) -> (Connection<ClientSide, Tcp>, Connection<ServerSide, Tcp>) {
-    (
-        client_config
-            .connect(server_name("localhost"))
-            .build(client_output)
-            .unwrap(),
-        Connection::new(server_config.clone()).unwrap(),
-    )
+) -> (
+    Connection<ClientSide, Tcp>,
+    Connection<ServerSide, Tcp>,
+    HandshakeBuffers,
+) {
+    let mut buf = HandshakeBuffers::default();
+    let client = client_config
+        .connect(server_name("localhost"))
+        .build(&mut buf.client_output)
+        .unwrap();
+    (client, Connection::new(server_config.clone()).unwrap(), buf)
 }
 
 /// Return a client and server config that don't share a common cipher suite
@@ -887,152 +989,10 @@ pub fn make_disjoint_suite_configs(provider: CryptoProvider) -> (ClientConfig, S
     (client_config, server_config)
 }
 
-pub fn do_handshake(
-    client_input: &mut VecInput,
-    client_output: &mut Vec<u8>,
-    client: &mut Connection<ClientSide, Tcp>,
-    server_input: &mut VecInput,
-    server_output: &mut Vec<u8>,
-    server: &mut Connection<ServerSide, Tcp>,
-) -> (usize, usize) {
-    do_handshake_collecting(
-        client_input,
-        client_output,
-        client,
-        &mut Vec::new(),
-        server_input,
-        server_output,
-        server,
-        &mut Vec::new(),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn do_handshake_collecting(
-    client_input: &mut VecInput,
-    client_output: &mut Vec<u8>,
-    client: &mut Connection<ClientSide, Tcp>,
-    client_received: &mut Vec<u8>,
-    server_input: &mut VecInput,
-    server_output: &mut Vec<u8>,
-    server: &mut Connection<ServerSide, Tcp>,
-    server_received: &mut Vec<u8>,
-) -> (usize, usize) {
-    let (mut to_client, mut to_server) = (0, 0);
-    while server.is_handshaking() || client.is_handshaking() {
-        to_server += transfer(client_output, server_input);
-        server
-            .read_tls(server_input, server_output)
-            .handle_all(server_received)
-            .unwrap();
-        to_client += transfer(server_output, client_input);
-        client
-            .read_tls(client_input, client_output)
-            .handle_all(client_received)
-            .unwrap();
-    }
-    (to_server, to_client)
-}
-
-/// Like [`do_handshake()`], but collects early data received by the server into `server_early_data`.
-pub fn do_handshake_collecting_early_data(
-    client_input: &mut VecInput,
-    client_output: &mut Vec<u8>,
-    client: &mut Connection<ClientSide, Tcp>,
-    server_input: &mut VecInput,
-    server_output: &mut Vec<u8>,
-    server: &mut Connection<ServerSide, Tcp>,
-    server_early_data: &mut Vec<u8>,
-) {
-    while server.is_handshaking() || client.is_handshaking() {
-        transfer(client_output, server_input);
-        let mut handler = server.read_tls(server_input, server_output);
-        while let Some(result) = handler.next_early_data() {
-            server_early_data.extend_from_slice(result.unwrap().bytes());
-        }
-        handler
-            .handle_all(&mut Vec::new())
-            .unwrap();
-        transfer(server_output, client_input);
-        client
-            .read_tls(client_input, client_output)
-            .handle_all(&mut Vec::new())
-            .unwrap();
-    }
-}
-
 #[derive(PartialEq, Debug)]
 pub enum ErrorFromPeer {
     Client(Error),
     Server(Error),
-}
-
-pub fn do_handshake_until_error(
-    client_input: &mut VecInput,
-    client_output: &mut Vec<u8>,
-    client: &mut Connection<ClientSide, Tcp>,
-    server_input: &mut VecInput,
-    server_output: &mut Vec<u8>,
-    server: &mut Connection<ServerSide, Tcp>,
-) -> Result<(), ErrorFromPeer> {
-    while server.is_handshaking() || client.is_handshaking() {
-        transfer(client_output, server_input);
-        server
-            .read_tls(server_input, server_output)
-            .handle_all(&mut Vec::new())
-            .map_err(ErrorFromPeer::Server)?;
-        transfer(server_output, client_input);
-        client
-            .read_tls(client_input, client_output)
-            .handle_all(&mut Vec::new())
-            .map_err(ErrorFromPeer::Client)?;
-    }
-
-    Ok(())
-}
-
-pub fn do_handshake_until_both_error(
-    client_input: &mut VecInput,
-    client_output: &mut Vec<u8>,
-    client: &mut Connection<ClientSide, Tcp>,
-    server_input: &mut VecInput,
-    server_output: &mut Vec<u8>,
-    server: &mut Connection<ServerSide, Tcp>,
-) -> Result<(), Vec<ErrorFromPeer>> {
-    match do_handshake_until_error(
-        client_input,
-        client_output,
-        client,
-        server_input,
-        server_output,
-        server,
-    ) {
-        Err(server_err @ ErrorFromPeer::Server(_)) => {
-            let mut errors = vec![server_err];
-            transfer(server_output, client_input);
-            let client_err = client
-                .read_tls(client_input, client_output)
-                .handle_all(&mut Vec::new())
-                .map_err(ErrorFromPeer::Client)
-                .expect_err("client didn't produce error after server error");
-            errors.push(client_err);
-            Err(errors)
-        }
-
-        Err(client_err @ ErrorFromPeer::Client(_)) => {
-            let mut errors = vec![client_err];
-            transfer(client_output, server_input);
-            let server_err = server
-                .read_tls(server_input, server_output)
-                .handle_all(&mut Vec::new())
-                .map_err(ErrorFromPeer::Server)
-                .expect_err("server didn't produce error after client error");
-            errors.push(server_err);
-            Err(errors)
-        }
-
-        Ok(()) => Ok(()),
-    }
 }
 
 pub fn server_name(name: &'static str) -> ServerName<'static> {
@@ -1117,10 +1077,8 @@ pub fn do_suite_and_kx_test(
         expect_version,
         expect_suite.suite()
     );
-    let mut client_output = Vec::new();
     let mut server_output = Vec::new();
-    let (mut client, mut server) =
-        make_pair_for_configs(client_config, server_config, &mut client_output);
+    let (mut client, mut server, mut buf) = make_pair_for_configs(client_config, server_config);
     let mut client_input = VecInput::default();
     let mut server_input = VecInput::default();
 
@@ -1141,7 +1099,7 @@ pub fn do_suite_and_kx_test(
     assert!(client.is_handshaking());
     assert!(server.is_handshaking());
 
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     server
         .read_tls(&mut server_input, &mut server_output)
         .handle_all(&mut Vec::new())
@@ -1176,7 +1134,7 @@ pub fn do_suite_and_kx_test(
 
     transfer(&mut server_output, &mut client_input);
     client
-        .read_tls(&mut client_input, &mut client_output)
+        .read_tls(&mut client_input, &mut buf.client_output)
         .handle_all(&mut Vec::new())
         .unwrap();
 
@@ -1205,14 +1163,14 @@ pub fn do_suite_and_kx_test(
         );
     }
 
-    transfer(&mut client_output, &mut server_input);
+    transfer(&mut buf.client_output, &mut server_input);
     server
         .read_tls(&mut server_input, &mut server_output)
         .handle_all(&mut Vec::new())
         .unwrap();
     transfer(&mut server_output, &mut client_input);
     client
-        .read_tls(&mut client_input, &mut client_output)
+        .read_tls(&mut client_input, &mut buf.client_output)
         .handle_all(&mut Vec::new())
         .unwrap();
 
@@ -2544,7 +2502,7 @@ pub mod encoding {
 
     /// Return an `ECHConfigList` containing a single `ECHConfig` for `public_name`
     ///
-    /// See <https://www.rfc-editor.org/rfc/rfc9849#section-4>.
+    /// See <https://www.rfc-editor.org/info/rfc9849#section-4>.
     pub fn ech_config_list(
         suite: HpkeSuite,
         public_key: &[u8],

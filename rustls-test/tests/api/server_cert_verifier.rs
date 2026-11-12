@@ -3,6 +3,7 @@
 #![allow(clippy::disallowed_types, clippy::duplicate_mod)]
 
 use core::hash::Hasher;
+use core::time::Duration;
 use std::sync::Arc;
 
 use pki_types::UnixTime;
@@ -22,13 +23,12 @@ use rustls::error::{
 use rustls::server::{ClientHello, ParsedCertificate, ServerCredentialResolver};
 use rustls::{
     ClientConfig, Connection, DistinguishedName, RootCertStore, ServerConfig, ServerSide,
-    SliceInput, Tcp, VecInput, VerifyPeerIdentity,
+    SliceInput, Tcp, VerifyPeerIdentity,
 };
 use rustls_test::{
-    ErrorFromPeer, KeyType, MockServerVerifier, MultiTest, certificate_error_expecting_name,
-    do_handshake, do_handshake_until_both_error, do_handshake_until_error, encoding,
-    make_client_config, make_pair_for_arc_configs, make_server_config, server_name,
-    webpki_server_verifier_builder,
+    ErrorFromPeer, HandshakeBuffers, KeyType, MockServerVerifier, MultiTest,
+    certificate_error_expecting_name, encoding, make_client_config, make_pair_for_arc_configs,
+    make_server_config, server_name, webpki_server_verifier_builder,
 };
 use webpki::anchor_from_trusted_cert;
 use x509_parser::prelude::FromDer;
@@ -43,20 +43,9 @@ fn client_can_override_certificate_verification() {
             Arc::new(MockServerVerifier::accepts_anything())
         }))
     {
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        buf.handshake(&mut client, &mut server);
     }
 }
 
@@ -69,20 +58,9 @@ fn client_can_override_certificate_verification_and_reject_certificate() {
             ))
         }))
     {
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let errs = do_handshake_until_both_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        let errs = buf.handshake_until_both_error(&mut client, &mut server);
         assert_eq!(
             errs,
             Err(vec![
@@ -108,20 +86,9 @@ fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
 
         let server_config = Arc::new(make_server_config(*kt, &provider));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&Arc::new(client_config), &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let errs = do_handshake_until_both_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&Arc::new(client_config), &server_config);
+        let errs = buf.handshake_until_both_error(&mut client, &mut server);
         assert_eq!(
             errs,
             Err(vec![
@@ -147,20 +114,9 @@ fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
 
         let server_config = Arc::new(make_server_config(*kt, &provider));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&Arc::new(client_config), &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let errs = do_handshake_until_both_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&Arc::new(client_config), &server_config);
+        let errs = buf.handshake_until_both_error(&mut client, &mut server);
         assert_eq!(
             errs,
             Err(vec![
@@ -178,20 +134,9 @@ fn client_can_override_certificate_verification_and_offer_no_signature_schemes()
             Arc::new(MockServerVerifier::offers_no_signature_schemes())
         }))
     {
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let errs = do_handshake_until_both_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        let errs = buf.handshake_until_both_error(&mut client, &mut server);
         assert_eq!(
             errs,
             Err(vec![
@@ -254,6 +199,7 @@ fn client_external_verifier_does_not_call_trait() {
         };
 
         assert!(!server.is_handshaking());
+        let client = client.split().unwrap();
         assert!(client.outputs.peer_identity().is_some());
     }
 }
@@ -356,20 +302,9 @@ fn test_pinned_ocsp_response_given_to_custom_server_cert_verifier() {
                 .unwrap(),
         );
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) =
-            make_pair_for_arc_configs(&client_config, &server_config, &mut client_output);
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&client_config, &server_config);
+        buf.handshake(&mut client, &mut server);
     }
 }
 
@@ -423,23 +358,9 @@ fn client_can_request_certain_trusted_cas() {
             .with_no_client_auth()
             .unwrap();
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) = make_pair_for_arc_configs(
-            &Arc::new(cas_sending_client_config),
-            &server_config,
-            &mut client_output,
-        );
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&Arc::new(cas_sending_client_config), &server_config);
+        buf.handshake(&mut client, &mut server);
 
         let cas_unaware_client_config = ClientConfig::builder(provider.clone().into())
             .dangerous()
@@ -447,31 +368,20 @@ fn client_can_request_certain_trusted_cas() {
             .with_no_client_auth()
             .unwrap();
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
-        let (mut client, mut server) = make_pair_for_arc_configs(
-            &Arc::new(cas_unaware_client_config),
-            &server_config,
-            &mut client_output,
-        );
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
+        let (mut client, mut server, mut buf) =
+            make_pair_for_arc_configs(&Arc::new(cas_unaware_client_config), &server_config);
 
-        cas_unaware_error_count += do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        )
-        .inspect_err(|e| {
-            assert!(matches!(
-                e,
-                ErrorFromPeer::Client(Error::InvalidCertificate(CertificateError::UnknownIssuer))
-            ))
-        })
-        .is_err() as usize;
+        cas_unaware_error_count += buf
+            .handshake_until_error(&mut client, &mut server)
+            .inspect_err(|e| {
+                assert!(matches!(
+                    e,
+                    ErrorFromPeer::Client(Error::InvalidCertificate(
+                        CertificateError::UnknownIssuer
+                    ))
+                ))
+            })
+            .is_err() as usize;
 
         println!("key type {key_type:?} success!");
     }
@@ -488,23 +398,14 @@ fn client_checks_server_certificate_with_given_ip_address() {
         server_config: Arc<ServerConfig>,
         name: &'static str,
     ) -> Result<(), ErrorFromPeer> {
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = client_config
             .connect(server_name(name))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        )
+        buf.handshake_until_error(&mut client, &mut server)
+            .map(|_| ())
     }
 
     for (client_config, server_config, _) in MultiTest::new(provider::DEFAULT_PROVIDER) {
@@ -541,24 +442,14 @@ fn client_checks_server_certificate_with_given_ip_address() {
 #[test]
 fn client_checks_server_certificate_with_given_name() {
     for (client_config, server_config, _) in MultiTest::new(provider::DEFAULT_PROVIDER) {
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = client_config
             .connect(server_name("not-the-right-hostname.com"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
 
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let err = do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let err = buf.handshake_until_error(&mut client, &mut server);
         assert_eq!(
             err,
             Err(ErrorFromPeer::Client(Error::InvalidCertificate(
@@ -585,25 +476,15 @@ fn client_check_server_certificate_ee_revoked() {
             .dangerous()
             .set_certificate_verifier(Arc::new(builder.build().unwrap()));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config)
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
 
         // We expect the handshake to fail since the server's EE certificate is revoked.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let err = do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let err = buf.handshake_until_error(&mut client, &mut server);
         assert_eq!(
             err,
             Err(ErrorFromPeer::Client(Error::InvalidCertificate(
@@ -641,26 +522,16 @@ fn client_check_server_certificate_ee_unknown_revocation() {
             .dangerous()
             .set_certificate_verifier(Arc::new(forbid_unknown_verifier.build().unwrap()));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config.clone())
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config.clone()).unwrap();
 
         // We expect if we use the forbid_unknown_verifier that the handshake will fail since the
         // server's EE certificate's revocation status is unknown given the CRLs we've provided.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let err = do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let err = buf.handshake_until_error(&mut client, &mut server);
         assert_eq!(
             err,
             Err(ErrorFromPeer::Client(Error::InvalidCertificate(
@@ -674,24 +545,14 @@ fn client_check_server_certificate_ee_unknown_revocation() {
             .dangerous()
             .set_certificate_verifier(Arc::new(allow_unknown_verifier.build().unwrap()));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config)
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        )
-        .unwrap();
+        buf.handshake_until_error(&mut client, &mut server)
+            .unwrap();
     }
 }
 
@@ -728,26 +589,16 @@ fn client_check_server_certificate_intermediate_revoked() {
                     .unwrap(),
             ));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config.clone())
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config.clone()).unwrap();
 
         // We expect the handshake to fail when using the full chain verifier since the intermediate's
         // EE certificate is revoked.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let err = do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let err = buf.handshake_until_error(&mut client, &mut server);
         assert_eq!(
             err,
             Err(ErrorFromPeer::Client(Error::InvalidCertificate(
@@ -759,26 +610,16 @@ fn client_check_server_certificate_intermediate_revoked() {
             .dangerous()
             .set_certificate_verifier(Arc::new(ee_verifier_builder.build().unwrap()));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config)
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
         // We expect the handshake to succeed when we use the verifier that only checks the EE certificate
         // revocation status. The revoked intermediate status should not be checked.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        )
-        .unwrap();
+        buf.handshake_until_error(&mut client, &mut server)
+            .unwrap();
     }
 }
 
@@ -813,25 +654,15 @@ fn client_check_server_certificate_ee_crl_expired() {
                     .unwrap(),
             ));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config.clone())
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config.clone()).unwrap();
 
         // We expect the handshake to fail since the CRL is expired.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        let err = do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        );
+        let err = buf.handshake_until_error(&mut client, &mut server);
         assert!(matches!(
             err,
             Err(ErrorFromPeer::Client(Error::InvalidCertificate(
@@ -847,26 +678,16 @@ fn client_check_server_certificate_ee_crl_expired() {
                     .unwrap(),
             ));
 
-        let mut client_output = Vec::new();
-        let mut server_output = Vec::new();
+        let mut buf = HandshakeBuffers::default();
         let mut client = Arc::new(client_config)
             .connect(server_name("localhost"))
-            .build(&mut client_output)
+            .build(&mut buf.client_output)
             .unwrap();
         let mut server = Connection::new(server_config).unwrap();
 
         // We expect the handshake to succeed when CRL expiration is ignored.
-        let mut client_input = VecInput::default();
-        let mut server_input = VecInput::default();
-        do_handshake_until_error(
-            &mut client_input,
-            &mut client_output,
-            &mut client,
-            &mut server_input,
-            &mut server_output,
-            &mut server,
-        )
-        .unwrap();
+        buf.handshake_until_error(&mut client, &mut server)
+            .unwrap();
     }
 }
 
@@ -911,6 +732,48 @@ fn client_check_server_certificate_helper_api() {
 }
 
 #[test]
+fn client_check_server_certificate_validity_period() {
+    let not_before = UnixTime::since_unix_epoch(Duration::from_secs(157_766_400));
+    let not_after = UnixTime::since_unix_epoch(Duration::from_secs(67_090_118_400));
+    let too_early = UnixTime::since_unix_epoch(Duration::from_secs(157_766_399));
+    let too_late = UnixTime::since_unix_epoch(Duration::from_secs(67_090_118_401));
+
+    for kt in KeyType::all_for_provider(&provider::DEFAULT_PROVIDER) {
+        let verifier =
+            webpki_server_verifier_builder(kt.client_root_store(), &provider::DEFAULT_PROVIDER)
+                .build()
+                .unwrap();
+        let identity = kt.identity();
+        let server_name = server_name("localhost");
+
+        assert_eq!(
+            verifier
+                .verify_identity(&ServerIdentity::new(&identity, &server_name, too_early))
+                .unwrap_err(),
+            Error::InvalidCertificate(CertificateError::NotValidYetContext {
+                time: too_early,
+                not_before,
+            }),
+        );
+        assert_eq!(
+            verifier
+                .verify_identity(&ServerIdentity::new(&identity, &server_name, too_late))
+                .unwrap_err(),
+            Error::InvalidCertificate(CertificateError::ExpiredContext {
+                time: too_late,
+                not_after,
+            }),
+        );
+
+        for now in [not_before, not_after] {
+            verifier
+                .verify_identity(&ServerIdentity::new(&identity, &server_name, now))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
 fn client_check_server_valid_purpose() {
     let Identity::X509(identity) = &*KeyType::default().client_identity() else {
         panic!("expected X509 identity");
@@ -944,7 +807,7 @@ fn client_check_server_valid_purpose() {
     assert_eq!(
         format!("{error}"),
         "invalid peer certificate: certificate does not allow extended key usage for \
-         server authentication, allows client authentication"
+         server authentication; it allows client authentication"
     );
 }
 

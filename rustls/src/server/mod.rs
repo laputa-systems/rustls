@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::time::Duration;
 
 use pki_types::{DnsName, UnixTime};
 
@@ -27,9 +28,11 @@ pub use connection::{ReceivedEarlyData, ServerHandshake, ServerSide};
 pub use crate::conn::Accepted;
 
 pub(crate) mod handy;
-#[cfg(feature = "webpki")]
+pub use handy::NoServerSessionStorage;
+#[cfg(all(feature = "webpki", feature = "std"))]
 pub use handy::ServerNameResolver;
-pub use handy::{NoServerSessionStorage, ServerSessionMemoryCache};
+#[cfg(feature = "std")]
+pub use handy::ServerSessionMemoryCache;
 
 mod hs;
 pub(crate) use hs::{ChooseConfig, ServerHandler, ServerState};
@@ -113,7 +116,7 @@ impl<'a> CommonServerSessionValue<'a> {
     fn into_owned(self) -> CommonServerSessionValue<'static> {
         CommonServerSessionValue {
             creation_time_sec: self.creation_time_sec,
-            sni: self.sni.map(|s| s.to_owned()),
+            sni: self.sni.map(|s| s.into_owned()),
             cipher_suite: self.cipher_suite,
             peer_identity: self
                 .peer_identity
@@ -121,6 +124,13 @@ impl<'a> CommonServerSessionValue<'a> {
             alpn: self.alpn.map(|a| a.to_owned()),
             application_data: self.application_data.into_owned(),
         }
+    }
+
+    /// Whether this session was created more than `lifetime` ago.
+    pub(crate) fn has_expired(&self, now: UnixTime, lifetime: Duration) -> bool {
+        self.creation_time_sec
+            .saturating_add(lifetime.as_secs())
+            < now.as_secs()
     }
 
     pub(crate) fn can_resume(&self, suite: CipherSuite, sni: Option<&DnsName<'_>>) -> bool {
@@ -171,7 +181,7 @@ impl Codec<'_> for CommonServerSessionValue<'_> {
             1 => {
                 let dns_name = SizedPayload::<u8, MaybeEmpty>::read(r)?;
                 let dns_name = match DnsName::try_from(dns_name.bytes()) {
-                    Ok(dns_name) => dns_name.to_owned(),
+                    Ok(dns_name) => dns_name.into_owned(),
                     Err(_) => return Err(InvalidMessage::InvalidServerName),
                 };
 
@@ -219,3 +229,9 @@ impl AsRef<[u8]> for ServerSessionKey<'_> {
         self.inner
     }
 }
+
+/// How long a session in [`ServerConfig::session_storage`] stays resumable.
+///
+/// Advertised as `ticket_lifetime` for stateful TLS 1.3 tickets.  Tickets from
+/// [`ServerConfig::ticketer`] are bounded by its key rotation instead.
+pub(crate) const STATEFUL_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);

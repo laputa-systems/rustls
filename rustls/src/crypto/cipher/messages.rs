@@ -58,9 +58,9 @@ impl<'a> Record<Payload<'a>> {
         }
     }
 
-    /// Convert into an owned `Record<Plain<'static>>`.
-    pub fn into_owned(self) -> Self {
-        Self {
+    /// Convert into an owned `Record<Payload<'static>>`.
+    pub fn into_owned(self) -> Record<Payload<'static>> {
+        Record {
             typ: self.typ,
             version: self.version,
             payload: self.payload.into_owned(),
@@ -83,8 +83,7 @@ impl<'a> Record<InboundOpaque<'a>> {
     /// For TLS1.3 (only), checks the length record.payload is valid and removes the padding.
     ///
     /// Returns an error if the record payload (pre-unpadding) is too long, or the padding is invalid,
-    /// or the inner content type is `change_cipher_spec`, or the record payload (post-unpadding)
-    /// is too long.
+    /// or the inner content type is `change_cipher_spec`.
     pub fn into_tls13_unpadded_record(mut self) -> Result<Record<&'a [u8]>, Error> {
         let payload = &mut self.payload;
 
@@ -104,13 +103,9 @@ impl<'a> Record<InboundOpaque<'a>> {
         // > An implementation which receives any other change_cipher_spec value or
         // > which receives a protected change_cipher_spec record MUST abort the
         // > handshake with an "unexpected_message" alert.
-        // <https://www.rfc-editor.org/rfc/rfc9846#section-5>
+        // <https://www.rfc-editor.org/info/rfc9846#section-5>
         if self.typ == ContentType::ChangeCipherSpec {
             return Err(PeerMisbehaved::IllegalMiddleboxChangeCipherSpec.into());
-        }
-
-        if payload.len() > MAX_FRAGMENT_LEN.get() {
-            return Err(Error::PeerSentOversizedRecord);
         }
 
         self.version = EncodableVersion::Legacy(ProtocolVersion::TLSv1_3);
@@ -393,11 +388,6 @@ impl<'a> From<&'a Vec<u8>> for OutboundPlain<'a> {
 }
 
 /// An externally length'd payload
-///
-/// When encountered in an [`Record`], it represents a plaintext payload. It can be
-/// decrypted from an [`InboundOpaque`] or encrypted by a
-/// [`RecordEncrypter`](crate::crypto::cipher::RecordEncrypter), and it is also used for
-/// joining and fragmenting.
 #[non_exhaustive]
 #[derive(Clone, Eq, PartialEq)]
 pub enum Payload<'a> {
