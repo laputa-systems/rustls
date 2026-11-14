@@ -11,7 +11,7 @@ on:
 jobs:
   cross:
     name: cross-target testing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         target:
@@ -35,8 +35,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
       - name: Install cross
         uses: taiki-e/cache-cargo-install-action@v3
         with:

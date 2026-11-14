@@ -17,28 +17,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # test a bunch of toolchains on ubuntu
-        rust:
-          - stable
-          - beta
-          - nightly
-        os: [ubuntu-latest]
-        # but only stable on macos/windows (slower platforms)
-        include:
-          - os: macos-latest
-            rust: stable
-          - os: windows-latest
-            rust: stable
+        os: [ubuntu-26.04, xcode-27, windows-latest]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Install ${{ matrix.rust }} toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
 
       - name: Install NASM for aws-lc-rs on Windows
         if: runner.os == 'Windows'
@@ -61,28 +45,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # test a bunch of toolchains on ubuntu
-        rust:
-          - stable
-          - beta
-          - nightly
-        os: [ubuntu-latest]
-        # but only stable on macos/windows (slower platforms)
-        include:
-          - os: macos-latest
-            rust: stable
-          - os: windows-latest
-            rust: stable
+        os: [ubuntu-26.04, xcode-27, windows-latest]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Install ${{ matrix.rust }} toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
 
       - name: Install NASM for aws-lc-rs on Windows
         if: runner.os == 'Windows'
@@ -129,15 +97,12 @@ jobs:
 
   feature-powerset:
     name: Feature Powerset
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo hack
         uses: taiki-e/install-action@cargo-hack
