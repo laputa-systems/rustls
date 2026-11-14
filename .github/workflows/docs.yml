@@ -15,15 +15,13 @@ on:
 jobs:
   generate:
     name: Generate pre-release documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Install rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
 
       - name: Install zola
         uses: taiki-e/install-action@v2
@@ -84,7 +82,7 @@ jobs:
 
   deploy:
     name: Deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.repository == 'rustls/rustls' && github.ref == 'refs/heads/main'
     needs: generate
     permissions:
